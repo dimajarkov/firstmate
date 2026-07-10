@@ -28,6 +28,12 @@
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product - teardown proceeds once the report exists, and refuses without it.
+# Arena CRM local-cli tasks perform the repo-owned normal Supabase stop after
+# these safety checks pass and immediately before their worktree is returned.
+# Teardown verifies the runtime metadata still belongs to this exact worktree
+# and that no other in-flight task owns the same runtime slug. Missing metadata
+# and non-local targets are safe skips. A malformed or conflicting owner, or a
+# failed stop, aborts before lease return and preserves task state.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -677,6 +683,112 @@ validate_worktree_teardown_safety() {
   fi
 }
 
+project_is_arena_crm() {
+  local remotes
+  remotes=$(git -C "$PROJ" remote -v 2>/dev/null || true)
+  case "$remotes" in
+    *github.com/ArenaCRM/arena-crm*|*github.com:ArenaCRM/arena-crm*) return 0 ;;
+  esac
+  return 1
+}
+
+arena_runtime_metadata_value() {
+  local metadata=$1 filter=$2
+  jq -er "$filter | select(type == \"string\" and length > 0)" "$metadata" 2>/dev/null
+}
+
+validate_arena_runtime_stop_owner() {
+  local current_wt=$1 slug=$2 other_meta other_id other_wt
+  local other_wt_abs other_runtime other_target other_slug
+  for other_meta in "$STATE"/*.meta; do
+    [ -e "$other_meta" ] || continue
+    [ "$other_meta" != "$META" ] || continue
+    other_id=$(basename "$other_meta" .meta)
+    other_wt=$(meta_value "$other_meta" worktree)
+    if [ -n "$other_wt" ] && [ -d "$other_wt" ]; then
+      other_wt_abs=$(canonical_existing_dir "$other_wt" || true)
+      if [ -n "$other_wt_abs" ] && [ "$other_wt_abs" = "$current_wt" ]; then
+        echo "REFUSED: Arena runtime worktree $current_wt is also owned by in-flight task $other_id." >&2
+        return 1
+      fi
+    fi
+
+    other_runtime="$other_wt/.arena/worktree-runtime.json"
+    [ -n "$other_wt" ] && [ -f "$other_runtime" ] || continue
+    other_target=$(arena_runtime_metadata_value "$other_runtime" '.supabase.target' || true)
+    [ "$other_target" = local-cli ] || continue
+    other_slug=$(arena_runtime_metadata_value "$other_runtime" '.slug' || true)
+    if [ -z "$other_slug" ]; then
+      echo "REFUSED: cannot verify Arena runtime ownership for in-flight task $other_id from $other_runtime." >&2
+      return 1
+    fi
+    if [ "$other_slug" = "$slug" ]; then
+      echo "REFUSED: Arena local runtime slug $slug is also owned by in-flight task $other_id at $other_wt." >&2
+      return 1
+    fi
+  done
+}
+
+stop_arena_local_supabase_before_return() {
+  local runtime_metadata target metadata_wt current_wt metadata_wt_abs slug out
+  local latest_target latest_metadata_wt latest_slug
+  [ "$KIND" != secondmate ] || return 0
+  [ -d "$WT" ] || return 0
+  project_is_arena_crm || return 0
+
+  runtime_metadata="$WT/.arena/worktree-runtime.json"
+  if [ ! -f "$runtime_metadata" ]; then
+    echo "teardown: Arena runtime stop skipped: no runtime metadata at $runtime_metadata"
+    return 0
+  fi
+
+  target=$(arena_runtime_metadata_value "$runtime_metadata" '.supabase.target' || true)
+  if [ -z "$target" ]; then
+    echo "REFUSED: Arena runtime metadata $runtime_metadata has no valid supabase.target; preserving worktree and task state." >&2
+    return 1
+  fi
+  if [ "$target" != local-cli ]; then
+    echo "teardown: Arena runtime stop skipped: Supabase target is $target, not local-cli"
+    return 0
+  fi
+
+  metadata_wt=$(arena_runtime_metadata_value "$runtime_metadata" '.worktreePath' || true)
+  slug=$(arena_runtime_metadata_value "$runtime_metadata" '.slug' || true)
+  if [ -z "$metadata_wt" ] || [ -z "$slug" ]; then
+    echo "REFUSED: Arena local runtime metadata $runtime_metadata lacks a valid worktreePath or slug; preserving worktree and task state." >&2
+    return 1
+  fi
+  current_wt=$(canonical_existing_dir "$WT") || {
+    echo "REFUSED: cannot canonicalize Arena task worktree $WT before local runtime stop." >&2
+    return 1
+  }
+  metadata_wt_abs=$(canonical_existing_dir "$metadata_wt" || true)
+  if [ -z "$metadata_wt_abs" ] || [ "$metadata_wt_abs" != "$current_wt" ]; then
+    echo "REFUSED: Arena runtime metadata owns ${metadata_wt_abs:-$metadata_wt}, not task worktree $current_wt; preserving worktree and task state." >&2
+    return 1
+  fi
+
+  validate_arena_runtime_stop_owner "$current_wt" "$slug" || return 1
+  latest_target=$(arena_runtime_metadata_value "$runtime_metadata" '.supabase.target' || true)
+  latest_metadata_wt=$(arena_runtime_metadata_value "$runtime_metadata" '.worktreePath' || true)
+  latest_slug=$(arena_runtime_metadata_value "$runtime_metadata" '.slug' || true)
+  if [ "$latest_target" != "$target" ] || [ "$latest_metadata_wt" != "$metadata_wt" ] || [ "$latest_slug" != "$slug" ]; then
+    echo "REFUSED: Arena runtime metadata changed during teardown ownership checks; preserving worktree and task state." >&2
+    return 1
+  fi
+  command -v bun >/dev/null 2>&1 || {
+    echo "error: bun is required to stop Arena local Supabase before teardown; preserving worktree and task state" >&2
+    return 1
+  }
+  if ! out=$(cd "$WT" && bun run supabase:worktree stop 2>&1); then
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+    echo "error: Arena normal local Supabase stop failed for task $ID; worktree return aborted and task state preserved" >&2
+    return 1
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out"
+  echo "teardown: Arena local Supabase stopped normally for task $ID"
+}
+
 require_orca_worktree_path_match() {
   local worktree_id=$1 inspected=$2 resolved inspected_abs resolved_abs
   resolved=$(fm_backend_worktree_path orca "$worktree_id") || {
@@ -1045,6 +1157,10 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+# Arena owns local Supabase stop mechanics. FirstMate only decides when a task is
+# teardown-eligible and verifies the runtime owner immediately before calling it.
+stop_arena_local_supabase_before_return || exit 1
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then

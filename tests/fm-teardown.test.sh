@@ -1242,6 +1242,242 @@ test_local_only_force_overrides_unpushed() {
   pass "local-only worktree with unpushed work is torn down under --force (escape hatch)"
 }
 
+configure_arena_runtime_case() {
+  local case_dir=$1 target=${2:-local-cli} slug=${3:-teardown-runtime}
+  printf '%s\n' '.arena/' >> "$case_dir/project/.git/info/exclude"
+  mkdir -p "$case_dir/wt/.arena"
+  jq -n \
+    --arg slug "$slug" \
+    --arg target "$target" \
+    --arg worktree "$case_dir/wt" \
+    '{slug: $slug, worktreePath: $worktree, supabase: {target: $target}}' \
+    > "$case_dir/wt/.arena/worktree-runtime.json"
+  git -C "$case_dir/project" remote add arena-upstream https://github.com/ArenaCRM/arena-crm.git
+}
+
+add_arena_teardown_event_fakes() {
+  local case_dir=$1 bun_status=${2:-0}
+  cat > "$case_dir/fakebin/bun" <<SH
+#!/usr/bin/env bash
+printf 'bun:%s\n' "\$*" >> "\$TEARDOWN_EVENT_LOG"
+[ "$bun_status" -eq 0 ] || { echo 'simulated Arena stop failure' >&2; exit "$bun_status"; }
+echo 'Arena local stack is stopped'
+SH
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf 'treehouse:%s\n' "$*" >> "$TEARDOWN_EVENT_LOG"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/bun" "$case_dir/fakebin/treehouse"
+}
+
+land_arena_case_branch() {
+  local case_dir=$1
+  wt_commit "$case_dir" "shippable Arena work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+}
+
+test_arena_local_runtime_stops_before_treehouse_return() {
+  local case_dir rc events
+  case_dir=$(make_case arena-local-stop)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  configure_arena_runtime_case "$case_dir"
+  add_arena_teardown_event_fakes "$case_dir"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "arena-local-stop: teardown should stop the local stack and return the worktree"
+  events=$(cat "$case_dir/events")
+  assert_contains "$events" $'bun:run supabase:worktree stop\ntreehouse:return --force' \
+    "arena-local-stop: normal stop must run before Treehouse return"
+  assert_not_contains "$events" "--no-backup" "arena-local-stop: teardown used destructive Supabase stop"
+  assert_not_contains "$events" "prune" "arena-local-stop: teardown used a prune command"
+  assert_grep "Arena local Supabase stopped normally" "$case_dir/stdout" \
+    "arena-local-stop: teardown did not print the normal-stop receipt"
+  pass "Arena local-cli teardown runs the repo-owned normal stop before Treehouse return"
+}
+
+test_arena_stop_failure_aborts_return_and_preserves_state() {
+  local case_dir rc events
+  case_dir=$(make_case arena-stop-failure)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  configure_arena_runtime_case "$case_dir"
+  add_arena_teardown_event_fakes "$case_dir" 23
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "arena-stop-failure: failed stop must abort teardown"
+  events=$(cat "$case_dir/events")
+  assert_contains "$events" "bun:run supabase:worktree stop" \
+    "arena-stop-failure: normal stop was not attempted"
+  assert_not_contains "$events" "treehouse:" "arena-stop-failure: Treehouse return ran after stop failure"
+  [ -d "$case_dir/wt" ] || fail "arena-stop-failure: worktree was removed"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "arena-stop-failure: task metadata was removed"
+  assert_grep "worktree return aborted and task state preserved" "$case_dir/stderr" \
+    "arena-stop-failure: failure did not explain preserved state"
+  pass "Arena stop failure aborts lease return and preserves worktree and task state"
+}
+
+test_arena_hosted_runtime_skips_local_stop() {
+  local case_dir rc events
+  case_dir=$(make_case arena-hosted-skip)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  configure_arena_runtime_case "$case_dir" hosted-dev
+  add_arena_teardown_event_fakes "$case_dir"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "arena-hosted-skip: hosted target should retain normal teardown behavior"
+  events=$(cat "$case_dir/events")
+  assert_not_contains "$events" "bun:" "arena-hosted-skip: hosted target invoked local stop"
+  assert_contains "$events" "treehouse:return --force" "arena-hosted-skip: worktree was not returned"
+  assert_grep "target is hosted-dev, not local-cli" "$case_dir/stdout" \
+    "arena-hosted-skip: hosted skip receipt missing"
+  pass "Arena hosted-dev teardown skips local Docker stop"
+}
+
+test_arena_missing_runtime_metadata_skips_safely() {
+  local case_dir rc events
+  case_dir=$(make_case arena-missing-runtime)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  git -C "$case_dir/project" remote add arena-upstream https://github.com/ArenaCRM/arena-crm.git
+  add_arena_teardown_event_fakes "$case_dir"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "arena-missing-runtime: legacy task without runtime metadata should teardown safely"
+  events=$(cat "$case_dir/events")
+  assert_not_contains "$events" "bun:" "arena-missing-runtime: missing metadata invoked local stop"
+  assert_contains "$events" "treehouse:return --force" "arena-missing-runtime: worktree was not returned"
+  assert_grep "no runtime metadata" "$case_dir/stdout" "arena-missing-runtime: skip receipt missing"
+  pass "Arena task without runtime metadata keeps legacy teardown behavior"
+}
+
+test_arena_already_stopped_runtime_is_idempotent() {
+  local case_dir rc
+  case_dir=$(make_case arena-already-stopped)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  configure_arena_runtime_case "$case_dir"
+  add_arena_teardown_event_fakes "$case_dir"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "arena-already-stopped: idempotent Arena stop success should allow teardown"
+  assert_grep "Arena local stack is stopped" "$case_dir/stdout" \
+    "arena-already-stopped: repo-owned idempotent receipt was not relayed"
+  pass "an already-stopped Arena local stack remains teardown-idempotent"
+}
+
+test_arena_unlanded_work_refuses_before_stop() {
+  local case_dir rc events
+  case_dir=$(make_case arena-unlanded-before-stop)
+  write_meta "$case_dir" direct-PR ship
+  configure_arena_runtime_case "$case_dir"
+  add_arena_teardown_event_fakes "$case_dir"
+  printf 'dirty\n' > "$case_dir/wt/unlanded.txt"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "arena-unlanded-before-stop: dirty work must refuse teardown"
+  events=$(cat "$case_dir/events")
+  assert_not_contains "$events" "bun:" "arena-unlanded-before-stop: active task stack was stopped"
+  assert_not_contains "$events" "treehouse:" "arena-unlanded-before-stop: dirty worktree was returned"
+  assert_grep "has uncommitted changes" "$case_dir/stderr" \
+    "arena-unlanded-before-stop: existing safety refusal missing"
+  pass "active Arena work is rejected before any local runtime stop"
+}
+
+test_non_arena_project_never_invokes_runtime_stop() {
+  local case_dir rc events
+  case_dir=$(make_case non-arena-runtime)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  printf '%s\n' '.arena/' >> "$case_dir/project/.git/info/exclude"
+  mkdir -p "$case_dir/wt/.arena"
+  jq -n --arg worktree "$case_dir/wt" \
+    '{slug: "non-arena", worktreePath: $worktree, supabase: {target: "local-cli"}}' \
+    > "$case_dir/wt/.arena/worktree-runtime.json"
+  add_arena_teardown_event_fakes "$case_dir"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "non-arena-runtime: existing teardown should remain unchanged"
+  events=$(cat "$case_dir/events")
+  assert_not_contains "$events" "bun:" "non-arena-runtime: non-Arena project invoked Arena stop"
+  assert_contains "$events" "treehouse:return --force" "non-arena-runtime: worktree was not returned"
+  pass "non-Arena projects retain existing teardown behavior"
+}
+
+test_arena_shared_runtime_owner_refuses_stop() {
+  local case_dir other_wt rc events
+  case_dir=$(make_case arena-shared-owner)
+  write_meta "$case_dir" direct-PR ship
+  land_arena_case_branch "$case_dir"
+  configure_arena_runtime_case "$case_dir" local-cli shared-slug
+  add_arena_teardown_event_fakes "$case_dir"
+  other_wt="$case_dir/other-wt"
+  git -C "$case_dir/project" worktree add -q -b fm/other-task "$other_wt" main
+  mkdir -p "$other_wt/.arena"
+  jq -n --arg worktree "$other_wt" \
+    '{slug: "shared-slug", worktreePath: $worktree, supabase: {target: "local-cli"}}' \
+    > "$other_wt/.arena/worktree-runtime.json"
+  fm_write_meta "$case_dir/state/other-task.meta" \
+    "window=fm-other-task" \
+    "worktree=$other_wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=direct-PR"
+  : > "$case_dir/events"
+
+  set +e
+  TEARDOWN_EVENT_LOG="$case_dir/events" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "arena-shared-owner: another in-flight owner must block stop"
+  events=$(cat "$case_dir/events")
+  assert_not_contains "$events" "bun:" "arena-shared-owner: shared stack was stopped"
+  assert_not_contains "$events" "treehouse:" "arena-shared-owner: current worktree was returned"
+  assert_grep "also owned by in-flight task other-task" "$case_dir/stderr" \
+    "arena-shared-owner: ownership conflict was not precise"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "arena-shared-owner: current task state was removed"
+  pass "Arena runtime shared with another live task fails closed before stop"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1271,3 +1507,11 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
+test_arena_local_runtime_stops_before_treehouse_return
+test_arena_stop_failure_aborts_return_and_preserves_state
+test_arena_hosted_runtime_skips_local_stop
+test_arena_missing_runtime_metadata_skips_safely
+test_arena_already_stopped_runtime_is_idempotent
+test_arena_unlanded_work_refuses_before_stop
+test_non_arena_project_never_invokes_runtime_stop
+test_arena_shared_runtime_owner_refuses_stop
