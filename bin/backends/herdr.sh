@@ -356,8 +356,105 @@ fm_backend_herdr_child_for_task() {  # <session> <parent-workspace-id> <task-id>
     | .workspace_id' 2>/dev/null | head -1
 }
 
+fm_backend_herdr_clear_task_husks() {  # <session> <parent-workspace-id> <task-id>
+  local session=$1 parent=$2 task_id=$3 list parent_repo children child panes pane state remaining
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
+    echo "error: could not inspect native Herdr children for task '$task_id'" >&2
+    return 1
+  }
+  parent_repo=$(printf '%s' "$list" | jq -r --arg id "$parent" '
+    if (.result.workspaces | type) == "array" then
+      .result.workspaces[]? | select(.workspace_id == $id) | .worktree.repo_key // empty
+    else error("missing result.workspaces") end' 2>/dev/null) || return 1
+  [ -n "$parent_repo" ] || return 1
+  children=$(printf '%s' "$list" | jq -r --arg parent "$parent" --arg repo "$parent_repo" --arg task "$task_id" '
+    .result.workspaces[]?
+    | select(.workspace_id != $parent
+        and .label == $task
+        and (.worktree.is_linked_worktree // false) == true
+        and .worktree.repo_key == $repo)
+    | .workspace_id' 2>/dev/null) || return 1
+  [ -n "$children" ] || return 0
+  while IFS= read -r child; do
+    [ -n "$child" ] || continue
+    panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$child" 2>/dev/null) || {
+      echo "error: could not inspect panes in native Herdr child $child for task '$task_id'" >&2
+      return 1
+    }
+    panes=$(printf '%s' "$panes" | jq -r 'if (.result.panes | type) == "array" then .result.panes[]?.pane_id else error("missing result.panes") end' 2>/dev/null) || {
+      echo "error: could not parse panes in native Herdr child $child for task '$task_id'" >&2
+      return 1
+    }
+    if [ -z "$panes" ]; then
+      echo "error: native Herdr child $child for task '$task_id' has unknown agent state" >&2
+      return 1
+    fi
+    while IFS= read -r pane; do
+      [ -n "$pane" ] || continue
+      state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
+      case "$state" in
+        dead|no-agent) : ;;
+        live)
+          echo "error: native Herdr child for task '$task_id' already exists as live workspace $child" >&2
+          return 1
+          ;;
+        *)
+          echo "error: native Herdr child $child for task '$task_id' has unknown agent state" >&2
+          return 1
+          ;;
+      esac
+    done <<EOF
+$panes
+EOF
+  done <<EOF
+$children
+EOF
+  while IFS= read -r child; do
+    [ -n "$child" ] || continue
+    fm_backend_herdr_cli "$session" workspace close "$child" >/dev/null 2>&1 || {
+      echo "error: failed to close native Herdr husk $child for task '$task_id'" >&2
+      return 1
+    }
+  done <<EOF
+$children
+EOF
+  remaining=$(fm_backend_herdr_child_for_task "$session" "$parent" "$task_id") || {
+    echo "error: could not verify native Herdr husk removal for task '$task_id'" >&2
+    return 1
+  }
+  if [ -n "$remaining" ]; then
+    echo "error: native Herdr child for task '$task_id' remains open as workspace $remaining" >&2
+    return 1
+  fi
+}
+
+fm_backend_herdr_workspace_ids_for_path() {  # <workspace-list-json> <canonical-path>
+  local list=$1 expected=$2 rows id declared actual
+  rows=$(printf '%s' "$list" | jq -r '
+    if (.result.workspaces | type) == "array" then
+      .result.workspaces[]?
+      | select((.worktree.is_linked_worktree // false) == true)
+      | [.workspace_id, (if (.worktree.checkout_path | type) == "string" then .worktree.checkout_path else "" end)] | @tsv
+    else error("missing result.workspaces") end' 2>/dev/null) || return 1
+  [ -n "$rows" ] || return 0
+  while IFS=$'\t' read -r id declared; do
+    [ -n "$id" ] && [ -n "$declared" ] || return 1
+    actual=$(cd "$declared" 2>/dev/null && pwd -P) || {
+      [ "$declared" = "$expected" ] && printf '%s\n' "$id"
+      continue
+    }
+    [ "$actual" = "$expected" ] && printf '%s\n' "$id"
+  done <<EOF
+$rows
+EOF
+}
+
 fm_backend_herdr_close_treehouse_child() {  # <session> <workspace-id> <treehouse-path>
-  local session=$1 workspace=$2 path=$3 list entry declared expected actual
+  local session=$1 workspace=$2 path=$3 list entry declared expected actual matching
+  expected=$(cd "$path" 2>/dev/null && pwd -P) || {
+    echo "error: cannot resolve Treehouse path $path before closing herdr workspace $workspace" >&2
+    return 1
+  }
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
     echo "error: could not inspect herdr child workspace $workspace in session $session" >&2
     return 1
@@ -367,16 +464,22 @@ fm_backend_herdr_close_treehouse_child() {  # <session> <workspace-id> <treehous
     return 1
   fi
   entry=$(printf '%s' "$list" | jq -c --arg id "$workspace" '.result.workspaces[]? | select(.workspace_id == $id)' 2>/dev/null | head -1)
-  [ -n "$entry" ] || return 0
+  if [ -z "$entry" ]; then
+    matching=$(fm_backend_herdr_workspace_ids_for_path "$list" "$expected") || {
+      echo "error: could not verify Treehouse path $expected is absent from herdr session $session" >&2
+      return 1
+    }
+    if [ -n "$matching" ]; then
+      echo "error: Treehouse path $expected remains open in herdr workspace ${matching//$'\n'/ }" >&2
+      return 1
+    fi
+    return 0
+  fi
   if ! printf '%s' "$entry" | jq -e '(.worktree.is_linked_worktree // false) == true and (.worktree.checkout_path | type) == "string"' >/dev/null 2>&1; then
     echo "error: herdr workspace $workspace is not a linked worktree presentation" >&2
     return 1
   fi
   declared=$(printf '%s' "$entry" | jq -r '.worktree.checkout_path')
-  expected=$(cd "$path" 2>/dev/null && pwd -P) || {
-    echo "error: cannot resolve Treehouse path $path before closing herdr workspace $workspace" >&2
-    return 1
-  }
   actual=$(cd "$declared" 2>/dev/null && pwd -P) || {
     echo "error: cannot resolve herdr workspace $workspace checkout path $declared" >&2
     return 1
@@ -401,6 +504,34 @@ fm_backend_herdr_close_treehouse_child() {  # <session> <workspace-id> <treehous
     echo "error: herdr child workspace $workspace remains open in session $session" >&2
     return 1
   fi
+  matching=$(fm_backend_herdr_workspace_ids_for_path "$list" "$expected") || {
+    echo "error: could not verify Treehouse path $expected is absent after closing herdr workspace $workspace" >&2
+    return 1
+  }
+  if [ -n "$matching" ]; then
+    echo "error: Treehouse path $expected remains open in herdr workspace ${matching//$'\n'/ }" >&2
+    return 1
+  fi
+}
+
+fm_backend_herdr_cleanup_failed_child_open() {  # <session> <workspace-id> <canonical-treehouse-path>
+  local session=$1 workspace=$2 expected=$3 list entry declared actual matching
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1 || return 1
+  entry=$(printf '%s' "$list" | jq -c --arg id "$workspace" '.result.workspaces[]? | select(.workspace_id == $id)' 2>/dev/null | head -1)
+  [ -n "$entry" ] || return 1
+  printf '%s' "$entry" | jq -e '(.worktree.is_linked_worktree // false) == true and (.worktree.checkout_path | type) == "string"' >/dev/null 2>&1 || return 1
+  declared=$(printf '%s' "$entry" | jq -r '.worktree.checkout_path')
+  actual=$(cd "$declared" 2>/dev/null && pwd -P) || return 1
+  [ "$actual" = "$expected" ] || return 1
+  fm_backend_herdr_cli "$session" workspace close "$workspace" >/dev/null 2>&1 || return 1
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1 || return 1
+  if printf '%s' "$list" | jq -e --arg id "$workspace" '.result.workspaces[]? | select(.workspace_id == $id)' >/dev/null 2>&1; then
+    return 1
+  fi
+  matching=$(fm_backend_herdr_workspace_ids_for_path "$list" "$expected") || return 1
+  [ -z "$matching" ]
 }
 
 # Open an existing Treehouse-owned worktree as a native Herdr child workspace.
@@ -408,23 +539,40 @@ fm_backend_herdr_close_treehouse_child() {  # <session> <workspace-id> <treehous
 # returns the Git worktree.
 # Echoes "<workspace_id> <tab_id> <pane_id>".
 fm_backend_herdr_open_treehouse_child() {  # <container> <task-id> <treehouse-path>
-  local container=$1 task_id=$2 path=$3 session parent out workspace tab pane actual already_open declared
+  local container=$1 task_id=$2 path=$3 session parent out workspace tab pane actual already_open declared valid=1
   session=${container%%:*}
   parent=${container#*:}
   actual=$(cd "$path" 2>/dev/null && pwd -P) || return 1
-  out=$(fm_backend_herdr_cli "$session" worktree open --workspace "$parent" --path "$actual" --label "$task_id" --no-focus --json 2>/dev/null) || return 1
+  out=$(fm_backend_herdr_cli "$session" worktree open --workspace "$parent" --path "$actual" --label "$task_id" --no-focus --json 2>/dev/null) || {
+    printf 'cleanup-unverified:unknown'
+    return 1
+  }
   already_open=$(printf '%s' "$out" | jq -r 'if (.result | has("already_open")) then .result.already_open else empty end' 2>/dev/null)
+  workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   if [ "$already_open" != false ]; then
     echo "error: herdr refused a new child workspace for task '$task_id' because the checkout was already open" >&2
+    printf 'cleanup-blocked:%s' "${workspace:-unknown}"
     return 1
   fi
-  workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   declared=$(printf '%s' "$out" | jq -r '.result.workspace.worktree.checkout_path // empty' 2>/dev/null)
-  [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] && [ -n "$declared" ] || return 1
-  [ "$(cd "$declared" 2>/dev/null && pwd -P)" = "$actual" ] || return 1
-  printf '%s' "$out" | jq -e '(.result.workspace.worktree.is_linked_worktree // false) == true' >/dev/null 2>&1 || return 1
+  [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] && [ -n "$declared" ] || valid=0
+  if [ "$valid" = 1 ] && [ "$(cd "$declared" 2>/dev/null && pwd -P)" != "$actual" ]; then
+    valid=0
+  fi
+  if [ "$valid" = 1 ] && ! printf '%s' "$out" | jq -e '(.result.workspace.worktree.is_linked_worktree // false) == true' >/dev/null 2>&1; then
+    valid=0
+  fi
+  if [ "$valid" = 0 ]; then
+    echo "error: herdr returned an invalid native child workspace for task '$task_id'" >&2
+    if [ -z "$workspace" ]; then
+      printf 'cleanup-unverified:unknown'
+    elif ! fm_backend_herdr_cleanup_failed_child_open "$session" "$workspace" "$actual"; then
+      printf 'cleanup-unverified:%s' "$workspace"
+    fi
+    return 1
+  fi
   printf '%s %s %s' "$workspace" "$tab" "$pane"
 }
 

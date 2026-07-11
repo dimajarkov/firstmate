@@ -188,6 +188,7 @@ ORCA_TERMINAL=
 HERDR_ABORT_TREEHOUSE=0
 HERDR_ABORT_CHILD_WORKSPACE=
 HERDR_ABORT_SESSION=
+HERDR_ABORT_CLEANUP_BLOCKED=0
 
 preserve_herdr_abort_meta() {
   mkdir -p "$STATE" 2>/dev/null || return 0
@@ -234,7 +235,9 @@ parse_orca_worktree_result() {
 orca_spawn_abort_cleanup() {
   local status=$? herdr_cleanup_failed=0
   if [ "$HERDR_ABORT_TREEHOUSE" = 1 ]; then
-    if [ -n "$HERDR_ABORT_CHILD_WORKSPACE" ] && [ -n "$HERDR_ABORT_SESSION" ]; then
+    if [ "$HERDR_ABORT_CLEANUP_BLOCKED" = 1 ]; then
+      herdr_cleanup_failed=1
+    elif [ -n "$HERDR_ABORT_CHILD_WORKSPACE" ] && [ -n "$HERDR_ABORT_SESSION" ]; then
       if ! fm_backend_herdr_close_treehouse_child "$HERDR_ABORT_SESSION" "$HERDR_ABORT_CHILD_WORKSPACE" "$WT"; then
         herdr_cleanup_failed=1
       fi
@@ -794,19 +797,23 @@ case "$BACKEND" in
     HERDR_PARENT_WORKSPACE_ID=$HERDR_WORKSPACE_ID
     if [ "$KIND" != secondmate ] && [ -f "$FM_HOME/$SUB_HOME_MARKER" ] \
       && fm_backend_herdr_workspace_matches_project "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$PROJ_ABS"; then
-      HERDR_EXISTING_CHILD=$(fm_backend_herdr_child_for_task "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$ID") || {
-        echo "error: could not verify native Herdr child uniqueness for task '$ID'" >&2
-        exit 1
-      }
-      if [ -n "$HERDR_EXISTING_CHILD" ]; then
-        echo "error: native Herdr child for task '$ID' already exists as workspace $HERDR_EXISTING_CHILD" >&2
+      if ! fm_backend_herdr_clear_task_husks "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$ID"; then
         exit 1
       fi
       WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || exit 1
       HERDR_ABORT_TREEHOUSE=1
       HERDR_ABORT_SESSION=$HERDR_SES
       validate_spawn_worktree "treehouse get --lease" "$CONTAINER"
-      HERDR_TASK_IDS=$(fm_backend_herdr_open_treehouse_child "$CONTAINER" "$ID" "$WT") || exit 1
+      HERDR_TASK_IDS=$(fm_backend_herdr_open_treehouse_child "$CONTAINER" "$ID" "$WT") || {
+        case "$HERDR_TASK_IDS" in
+          cleanup-unverified:*) HERDR_ABORT_CHILD_WORKSPACE=${HERDR_TASK_IDS#cleanup-unverified:} ;;
+          cleanup-blocked:*)
+            HERDR_ABORT_CHILD_WORKSPACE=${HERDR_TASK_IDS#cleanup-blocked:}
+            HERDR_ABORT_CLEANUP_BLOCKED=1
+            ;;
+        esac
+        exit 1
+      }
       read -r HERDR_CHILD_WORKSPACE_ID HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF

@@ -673,6 +673,54 @@ test_child_for_task_rejects_existing_exact_id() {
   pass "fm_backend_herdr_child_for_task: detects an exact-id child within the parent repository"
 }
 
+test_clear_task_husks_closes_confirmed_no_agent_child() {
+  local dir log resp fb status=0
+  dir="$TMP_ROOT/clear-child-husk"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1"}}}' > "$resp/3.out"
+  printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$resp/4.out"
+  : > "$resp/5.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}}]}}' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" || status=$?
+  expect_code 0 "$status" "confirmed no-agent child husk should be closed for recovery"
+  assert_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "confirmed no-agent child husk was not closed"
+  pass "fm_backend_herdr_clear_task_husks: closes a confirmed no-agent child for same-id recovery"
+}
+
+test_clear_task_husks_refuses_live_child() {
+  local dir log resp fb out status=0
+  dir="$TMP_ROOT/refuse-live-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1"}}}' > "$resp/3.out"
+  printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "live native child must block same-id recovery"
+  assert_contains "$out" "live workspace w9" "live child refusal did not identify the workspace"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "live child must never be closed"
+  pass "fm_backend_herdr_clear_task_husks: refuses a live exact-task child"
+}
+
+test_clear_task_husks_refuses_unknown_child() {
+  local dir log resp fb out status=0
+  dir="$TMP_ROOT/refuse-unknown-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
+  printf '%s\n' '{"error":{"code":"internal_error"}}' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "unknown native child state must block same-id recovery"
+  assert_contains "$out" "unknown agent state" "unknown child refusal was not explicit"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "unknown child must never be closed"
+  pass "fm_backend_herdr_clear_task_husks: refuses an unknown exact-task child"
+}
+
 test_open_treehouse_child_rejects_already_open() {
   local dir log resp fb path out status=0
   dir="$TMP_ROOT/already-open-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -684,6 +732,66 @@ test_open_treehouse_child_rejects_already_open() {
   [ "$status" -ne 0 ] || fail "already_open:true must be rejected outside recovery"
   assert_contains "$out" "already open" "already-open refusal was not explicit"
   pass "fm_backend_herdr_open_treehouse_child: refuses Herdr already_open adoption"
+}
+
+test_open_treehouse_child_cleans_up_invalid_created_child() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/invalid-created-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"already_open":false,"workspace":{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":false}},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' "$path" > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/2.out"
+  : > "$resp/3.out"
+  printf '%s\n' '{"result":{"workspaces":[]}}' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "invalid newly created child must fail"
+  assert_contains "$out" "invalid native child workspace" "invalid child response was not reported"
+  assert_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "invalid newly created child was not closed"
+  assert_not_contains "$out" "cleanup-unverified:" "verified cleanup should allow the abort path to return the lease"
+  pass "fm_backend_herdr_open_treehouse_child: cleans up an invalid newly created child"
+}
+
+test_open_treehouse_child_does_not_close_unverified_returned_id() {
+  local dir log resp fb path other out status=0
+  dir="$TMP_ROOT/unverified-created-child-id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; other="$dir/other-worktree"; mkdir -p "$path" "$other"
+  printf '{"result":{"already_open":false,"workspace":{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' "$other" > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$other" > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "invalid response pointing at another path must fail"
+  assert_contains "$out" "cleanup-unverified:w9" "unverified returned workspace id must preserve fail-closed cleanup state"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "unverified returned workspace id must not be closed"
+  pass "fm_backend_herdr_open_treehouse_child: does not close an unverified returned workspace id"
+}
+
+test_open_treehouse_child_missing_id_fails_closed_on_leaked_path() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/missing-child-id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"already_open":false,"workspace":{"worktree":{"checkout_path":"%s","is_linked_worktree":true}},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' "$path" > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; result=$(fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1") || { case "$result" in cleanup-unverified:*) workspace=${result#cleanup-unverified:} ;; *) exit 2 ;; esac; fm_backend_herdr_close_treehouse_child fmtest "$workspace" "$1"; }' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "created child with missing workspace id and leaked path must block lease-return cleanup"
+  assert_contains "$out" "remains open in herdr workspace w9" "missing workspace id did not preserve fail-closed path verification"
+  pass "fm_backend_herdr_open_treehouse_child: missing created-child id blocks lease return while the path remains open"
+}
+
+test_open_treehouse_child_cli_failure_keeps_cleanup_unverified() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/child-open-cli-failure"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '1\n' > "$resp/1.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "failed worktree-open command must fail"
+  assert_contains "$out" "cleanup-unverified:unknown" "failed worktree-open command must trigger path-based abort verification"
+  pass "fm_backend_herdr_open_treehouse_child: CLI failure preserves fail-closed abort cleanup"
 }
 
 test_close_treehouse_child_verifies_identity_and_disappearance() {
@@ -713,6 +821,47 @@ test_close_treehouse_child_refuses_reused_workspace_id() {
   assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "identity mismatch must not close the reused workspace"
   assert_contains "$out" "does not match Treehouse path" "identity mismatch refusal was not explicit"
   pass "fm_backend_herdr_close_treehouse_child: refuses a stale or reused workspace id"
+}
+
+test_close_treehouse_child_refuses_reopened_path_when_recorded_id_absent() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/reopened-absent-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w10","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_close_treehouse_child fmtest w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "reopened path under a new id must block teardown"
+  assert_contains "$out" "remains open in herdr workspace w10" "reopened-path refusal did not identify the new workspace"
+  pass "fm_backend_herdr_close_treehouse_child: recorded-id absence does not hide a reopened path"
+}
+
+test_close_treehouse_child_refuses_path_reopened_after_close() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/reopened-after-close"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
+  : > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w10","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_close_treehouse_child fmtest w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "path reopened under a new id after close must block teardown"
+  assert_contains "$out" "remains open in herdr workspace w10" "post-close reopened-path refusal did not identify the new workspace"
+  pass "fm_backend_herdr_close_treehouse_child: verifies the path stays absent after close"
+}
+
+test_close_treehouse_child_refuses_unknown_linked_workspace_identity() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/unknown-linked-identity"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w10","worktree":{"is_linked_worktree":true}}]}}' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_close_treehouse_child fmtest w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "unknown linked-workspace checkout identity must block absence proof"
+  assert_contains "$out" "could not verify Treehouse path" "unknown linked-workspace identity did not fail closed"
+  pass "fm_backend_herdr_close_treehouse_child: malformed linked identity cannot prove path absence"
 }
 
 test_kill_child_closes_workspace_presentation() {
@@ -1833,9 +1982,19 @@ test_workspace_find_matches_only_this_homes_own_label
 test_workspace_matches_project_uses_durable_identity
 test_open_treehouse_child_uses_existing_path_and_exact_task_id
 test_child_for_task_rejects_existing_exact_id
+test_clear_task_husks_closes_confirmed_no_agent_child
+test_clear_task_husks_refuses_live_child
+test_clear_task_husks_refuses_unknown_child
 test_open_treehouse_child_rejects_already_open
+test_open_treehouse_child_cleans_up_invalid_created_child
+test_open_treehouse_child_does_not_close_unverified_returned_id
+test_open_treehouse_child_missing_id_fails_closed_on_leaked_path
+test_open_treehouse_child_cli_failure_keeps_cleanup_unverified
 test_close_treehouse_child_verifies_identity_and_disappearance
 test_close_treehouse_child_refuses_reused_workspace_id
+test_close_treehouse_child_refuses_reopened_path_when_recorded_id_absent
+test_close_treehouse_child_refuses_path_reopened_after_close
+test_close_treehouse_child_refuses_unknown_linked_workspace_identity
 test_kill_child_closes_workspace_presentation
 test_runtime_evidence_stays_inside_child_workspace
 test_list_live_scoped_to_this_homes_workspace_only
