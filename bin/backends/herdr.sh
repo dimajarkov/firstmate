@@ -1195,8 +1195,12 @@ fm_backend_herdr_list_live() {  # <session>
     meta_parent=$(sed -n 's/^herdr_parent_workspace_id=//p' "$meta" | head -1)
     meta_child=$(sed -n 's/^herdr_child_workspace_id=//p' "$meta" | head -1)
     meta_worktree=$(sed -n 's/^worktree=//p' "$meta" | head -1)
-    [ "$meta_session" = "$session" ] && [ "$meta_layout" = child-workspace ] && [ "$meta_parent" = "$wsid" ] || continue
-    [ -n "$meta_child" ] && [ -n "$meta_worktree" ] || continue
+    if [ "$meta_session" != "$session" ] || [ "$meta_layout" != child-workspace ] || [ "$meta_parent" != "$wsid" ]; then
+      continue
+    fi
+    if [ -z "$meta_child" ] || [ -z "$meta_worktree" ]; then
+      continue
+    fi
     task_id=$(basename "$meta" .meta)
     entry=$(printf '%s' "$workspaces" | jq -c --arg id "$meta_child" --arg parent "$wsid" --arg repo "$parent_repo" --arg task "$task_id" '
       .result.workspaces[]?

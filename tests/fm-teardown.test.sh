@@ -1289,8 +1289,9 @@ SH
   expect_code 0 "$rc" "Herdr child teardown should complete"
   workspace_line=$(grep -n '^workspace-close:w9$' "$case_dir/order.log" | cut -d: -f1)
   return_line=$(grep -n '^treehouse-return:' "$case_dir/order.log" | cut -d: -f1)
-  [ -n "$workspace_line" ] && [ -n "$return_line" ] && [ "$workspace_line" -lt "$return_line" ] \
-    || fail "Herdr child presentation was not closed before Treehouse return: $(cat "$case_dir/order.log")"
+  if [ -z "$workspace_line" ] || [ -z "$return_line" ] || [ "$workspace_line" -ge "$return_line" ]; then
+    fail "Herdr child presentation was not closed before Treehouse return: $(cat "$case_dir/order.log")"
+  fi
   pass "native Herdr child presentation closes before guarded Treehouse return"
 }
 
