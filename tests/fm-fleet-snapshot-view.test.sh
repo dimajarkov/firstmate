@@ -173,6 +173,76 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
+test_runtime_metadata_states() {
+  local home fakebin out view wt wt_real id
+  home=$(make_home runtime-metadata)
+  fakebin=$(make_fakebin "$home")
+  for id in valid missing malformed mismatched stale; do
+    wt="$home/projects/$id-worktree"
+    mkdir -p "$wt"
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$wt" \
+      "project=alpha" \
+      "harness=codex" \
+      "kind=ship" \
+      "mode=ship"
+  done
+  fm_write_meta "$home/state/herdr-child.meta" \
+    "backend=herdr" \
+    "window=" \
+    "worktree=$home/projects/missing-worktree" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship" \
+    "herdr_layout=child-workspace" \
+    "herdr_session=scratch" \
+    "herdr_parent_workspace_id=w2" \
+    "herdr_child_workspace_id=w9" \
+    "herdr_tab_id=w9:t1" \
+    "herdr_pane_id=w9:p1" \
+    "herdr_parent_project=$home/projects/alpha"
+  mkdir -p "$home/projects/valid-worktree/.arena/dev-logs" "$home/projects/valid-worktree/proof"
+  cat > "$home/projects/valid-worktree/.arena/worktree-runtime.json" <<EOF
+{"schemaVersion":1,"worktreePath":"$home/projects/valid-worktree","slug":"runtime-valid","apps":["dash"],"ports":{"dash":3091},"urls":{"dash":"http://127.0.0.1:3091"},"supabase":{"ownership":"shared","stackId":"arena-local"},"proofDirectory":"proof"}
+EOF
+  mkdir -p "$home/projects/malformed-worktree/.arena" "$home/projects/mismatched-worktree/.arena" "$home/projects/stale-worktree/.arena"
+  printf '{bad json\n' > "$home/projects/malformed-worktree/.arena/worktree-runtime.json"
+  printf '{"worktreePath":"%s","slug":"wrong"}\n' "$home/projects/other-worktree" > "$home/projects/mismatched-worktree/.arena/worktree-runtime.json"
+  printf '{"worktreePath":"%s","slug":"runtime-stale"}\n' "$home/projects/stale-worktree" > "$home/projects/stale-worktree/.arena/worktree-runtime.json"
+  touch -t 202001010000 "$home/projects/stale-worktree/.arena/worktree-runtime.json"
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_RUNTIME_METADATA_STALE_SECONDS=3600 "$SNAPSHOT" --json)
+  wt_real=$(cd "$home/projects/valid-worktree" && pwd -P)
+  printf '%s' "$out" | jq -e --arg wt "$wt_real" '
+    .tasks[] | select(.id == "valid")
+    | .runtime.status == "valid"
+      and .runtime.validation == "valid"
+      and .runtime.worktree_path.actual == $wt
+      and .runtime.slug == "runtime-valid"
+      and .runtime.ports.dash == 3091
+      and .runtime.supabase.stack_id == "arena-local"
+      and (.runtime.log_directory | endswith("/.arena/dev-logs"))
+      and (.runtime.proof_directory | endswith("/proof"))
+  ' >/dev/null || fail "valid runtime metadata projection is wrong"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "missing") | .runtime.status == "absent" and .runtime.validation == "missing"' >/dev/null \
+    || fail "missing runtime metadata must be absent"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "malformed") | .runtime.status == "invalid" and .runtime.validation == "malformed"' >/dev/null \
+    || fail "malformed runtime metadata must be invalid"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "mismatched") | .runtime.status == "invalid" and .runtime.validation == "mismatched" and .runtime.slug == null' >/dev/null \
+    || fail "mismatched runtime metadata must be invalid and untrusted"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "stale") | .runtime.status == "stale" and .runtime.slug == "runtime-stale"' >/dev/null \
+    || fail "old runtime metadata must be stale"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "herdr-child") | .presentation.layout == "child-workspace" and .presentation.session == "scratch" and .presentation.parent_workspace_id == "w2" and .presentation.child_workspace_id == "w9" and .presentation.tab_id == "w9:t1" and .presentation.pane_id == "w9:p1"' >/dev/null \
+    || fail "durable Herdr parent/child presentation metadata is missing"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_RUNTIME_METADATA_STALE_SECONDS=3600 "$VIEW")
+  assert_contains "$view" "valid / runtime-valid" "fleet view did not render valid runtime metadata"
+  assert_contains "$view" "invalid / mismatched" "fleet view did not render invalid runtime metadata"
+  assert_contains "$view" "stale / runtime-stale" "fleet view did not render stale runtime metadata"
+  pass "fleet snapshot/view render valid, missing, malformed, mismatched, and stale runtime metadata without claiming health"
+}
+
 test_event_hints_follow_reconciled_current_state() {
   local home fakebin out
   home=$(make_home event-hints)
@@ -351,7 +421,7 @@ EOF
       and .paths.report.present == true
   ' >/dev/null || fail "bold task did not join to override-backed backlog and report"
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" "$VIEW")
-  assert_contains "$view" "| bold-task | done / status-log | scout | alpha | tmux | present | $data/bold-task/report.md" \
+  assert_contains "$view" "| bold-task | done / status-log | scout | alpha | tmux | present | absent | $data/bold-task/report.md" \
     "view should render bold in-flight row from snapshot"
   assert_contains "$view" "| blocked-reason | Blocked Reason | beta | ship | queued-comma - waits on queued-comma | - |" \
     "view should render blocked reason without title metadata"
@@ -368,7 +438,7 @@ test_view_renders_snapshot() {
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "| ship-task | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9" \
+  assert_contains "$view" "| ship-task | working / pane | ship | alpha | tmux | present | absent | https://github.com/kunchenguid/firstmate/pull/9" \
     "view should render ship row from snapshot"
   assert_contains "$view" "| queued-task | Queued Task | alpha | ship | ship-task | -" \
     "view should render queued backlog row"
@@ -399,13 +469,14 @@ test_view_renders_dead_secondmate_agent_status() {
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
   assert_contains "$view" "| dead-secondmate | unknown / none | secondmate | $home/secondmate-home | tmux | present / dead |" \
     "view should distinguish a present secondmate endpoint from a dead agent"
-  assert_contains "$view" "| dead-secondmate | unknown / none | secondmate | $home/secondmate-home | tmux | present / dead | - | $home/secondmate-home (absent) |" \
+  assert_contains "$view" "| dead-secondmate | unknown / none | secondmate | $home/secondmate-home | tmux | present / dead | absent | - | $home/secondmate-home (absent) |" \
     "view should show a recorded missing secondmate home path"
   pass "fleet view renders secondmate agent liveness"
 }
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_runtime_metadata_states
 test_event_hints_follow_reconciled_current_state
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides

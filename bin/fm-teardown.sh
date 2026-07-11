@@ -854,7 +854,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_container_id
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -877,12 +877,16 @@ cleanup_firstmate_home_children() {
       fi
     fi
     if [ -n "$child_t" ]; then
+      child_container_id=$(meta_value "$child_meta" zellij_tab_id)
+      if [ "$child_backend" = herdr ]; then
+        child_container_id=$(meta_value "$child_meta" herdr_child_workspace_id)
+      fi
       if [ "$child_backend" = zellij ]; then
         # Zellij titles are scoped by the owning home tag, so forced secondmate
         # cleanup must verify child tabs as that child home, not the parent.
-        ( unset FM_ROOT_OVERRIDE; FM_HOME=$home FM_ROOT=$home fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" ) 2>/dev/null || true
+        ( unset FM_ROOT_OVERRIDE; FM_HOME=$home FM_ROOT=$home fm_backend_kill "$child_backend" "$child_t" "$child_container_id" "fm-$child_id" ) 2>/dev/null || true
       else
-        fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" 2>/dev/null || true
+        fm_backend_kill "$child_backend" "$child_t" "$child_container_id" "fm-$child_id" 2>/dev/null || true
       fi
     fi
     if [ "$child_kind" = secondmate ]; then
@@ -985,6 +989,14 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Native Herdr child presentation must close before Treehouse sees or returns
+# the worktree.
+HERDR_PRESENTATION_CLOSED=0
+if [ "$BACKEND" = herdr ] && [ -n "$(meta_value "$META" herdr_child_workspace_id)" ]; then
+  fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" herdr_child_workspace_id)" 2>/dev/null || true
+  HERDR_PRESENTATION_CLOSED=1
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -1025,7 +1037,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   }
 fi
 
-if [ "$BACKEND" != orca ]; then
+if [ "$BACKEND" != orca ] && [ "$HERDR_PRESENTATION_CLOSED" != 1 ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
 if [ "$KIND" = secondmate ]; then

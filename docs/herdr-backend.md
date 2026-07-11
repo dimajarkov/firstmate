@@ -29,8 +29,9 @@ For `--secondmate` launches, secondmate home sync and inherited-config propagati
 
 No first-run provisioning is needed beyond having `herdr` and `jq` on `PATH`; firstmate creates the workspace and tab it needs on first spawn.
 
-Watching and attaching: each firstmate home gets its own herdr workspace (the primary uses `firstmate`; each secondmate uses `2ndmate-<secondmate-id>`), with one tab per task inside it, named `fm-<id>`.
-Attach to the selected `HERDR_SESSION` and switch to the workspace for the home you want to watch to see every one of that home's tasks as tabs in one tab bar.
+Watching and attaching: each firstmate home gets its own herdr workspace (the primary uses `firstmate`; each secondmate uses `2ndmate-<secondmate-id>`).
+Eligible tasks owned by a single-project secondmate appear as exact-task-id child workspaces backed by Treehouse paths; primary tasks, legacy parents, and project-less or multi-project secondmates retain the `fm-<id>` tab shape.
+Attach to the selected `HERDR_SESSION` and switch to the workspace or child you want to watch.
 You do not need to attach for routine supervision: from an active firstmate session, `bin/fm-peek.sh fm-<id>` reads a task's pane without attaching, and `FM_HOME=<this-firstmate-home> bin/fm-send.sh fm-<id> "<text>"` steers it unless `FM_HOME` is already set to the active firstmate home.
 
 Verify it works by spawning a trivial task with `--backend herdr` and confirming the task's meta records `backend=herdr` plus `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`; the workspace for your home should show the new `fm-<id>` tab.
@@ -56,18 +57,22 @@ A herdr spawn refuses loudly if `herdr` or `jq` is missing, or if the installed 
 
 Herdr is a session provider only.
 Treehouse remains the worktree provider, exactly as it is for tmux.
-Herdr's own `worktree.*` operations (branch-based, pooling/lease-free) are never used by this adapter.
+FirstMate uses only Herdr's existing-worktree `worktree open --path` presentation path after Treehouse has created and leased an eligible child.
+It never asks Herdr to create, remove, prune, or return a Git worktree.
 
-## Task container shape: tab-per-task in one workspace PER FIRSTMATE HOME
+## Task container shape: per-home parents with native Treehouse children when eligible
 
-Firstmate creates one herdr workspace PER FIRSTMATE HOME - the primary gets `firstmate`, each secondmate gets its own `2ndmate-<secondmate-id>` - and one TAB per task inside that home's own workspace.
-This is the same "one container, one endpoint per task" shape tmux uses (one session, one window per task), refined one level: the container is now scoped per home, not shared machine-wide.
+Firstmate creates one Herdr parent workspace per FirstMate home - the primary gets `firstmate`, and each secondmate gets `2ndmate-<secondmate-id>`.
+When a secondmate has exactly one registered project and its parent workspace is durably associated with that project clone, each new task uses a genuine child workspace opened from the Treehouse-owned worktree and labeled with the exact task id.
+The child workspace's first tab/pane is the agent endpoint, and up to three optional read-only `Runtime`, `Logs`, and `Proof` tabs remain inside that same child.
+Primary tasks, secondmate agent tabs, project-less or multi-project secondmates, and existing legacy parents retain one `fm-<id>` tab inside the per-home workspace.
 
 This refines, but does not reverse, P2's original decision (AGENTS.md task herdr-sm-spaces-k4).
 P2 established workspace-per-TASK vs. tab-per-task-in-one-shared-workspace and picked tab-per-task on the human-watching axis (below); that axis is untouched here and workspace-per-task stays rejected.
 What changed is the container's OWNER: P2 assumed a single firstmate instance per herdr session, so one shared `firstmate` workspace was enough.
 With secondmates now spawning their own herdr tasks, jamming every home's tabs into that one shared workspace made a captain's tab bar an unlabeled mix of primary and secondmate work with no visual way to tell them apart.
-Workspace-per-HOME fixes that while keeping tab-per-task's original human-watching win intact **within** each home: attaching to a home's own workspace (`herdr`, then switching to its space) still shows every one of *that home's* tasks as a tab in one tab bar, switchable with `ctrl+b <n>`; the ADDITIONAL win is that a captain juggling several homes on one herdr session now sees them as clearly labeled, separate spaces in herdr's spaces sidebar instead of one undifferentiated pile.
+Workspace-per-HOME fixed that original problem.
+The 2026-07-12 native-child refinement adds visible task hierarchy only where durable project and Treehouse identity make it safe, while leaving the prior tab behavior as the compatibility fallback.
 
 ### Label derivation (stable, derived from the home itself)
 
@@ -284,8 +289,83 @@ The fix, verified against the real binary in an isolated session (both a genuine
 The same guard is now a first-class production helper, `bin/fm-herdr-lab.sh`, not just test scaffolding.
 It provisions an isolated never-`default` lab session (names must start with `fm-lab-`), runs every task command through `run <session> ...` with a mandatory trailing `--session` appended, and refuses caller-supplied `--session`, any leading option before the subcommand, and every server or session-lifecycle subcommand.
 Destructive teardown goes only through `teardown <session>` (or a deliberate mid-run `stop <session>`), each re-running the refuse-default check immediately before every stop and delete.
-It also adds a before/after fleet-state tripwire: `provision` records the live `default` session before creating the lab session, and `teardown` verifies that recorded state is byte-identical afterward before clearing it, treating any missing, stopped, or changed default session as a hard failure rather than a warning.
+It also adds a before/after fleet-state tripwire.
+`provision` snapshots every pre-existing session's name and running state before creating the lab session, and `teardown` requires that canonical snapshot to remain byte-identical before clearing it.
+`HERDR_SESSION` must identify exactly one running pre-existing primary session, which is recorded in the snapshot and must remain present and running.
+The literal `default` remains forbidden as a lab target, but an already-stopped `default` no longer blocks a lab when a different named primary session is active.
+Any added, removed, renamed, started, or stopped pre-existing session is a hard failure rather than a cleanup warning.
 Crewmate briefs for tasks that drive Herdr lifecycle get this exact contract embedded by scaffolding with `bin/fm-brief.sh --herdr-lab`; every crewmate brief scaffolded without the flag instead carries a loud not-enabled gate, because the scaffold cannot detect from the caller-supplied repo string whether the task will touch Herdr lifecycle.
+
+## Native Treehouse child workspace verification (2026-07-12)
+
+Verified on Herdr 0.7.3, protocol 16, macOS aarch64, using only `bin/fm-herdr-lab.sh` against an isolated named session while `HERDR_SESSION=scratch` remained the protected primary and `default` was already stopped.
+The helper snapshotted all five pre-existing session name/running pairs before provisioning and confirmed the byte-identical snapshot after teardown.
+Neither `scratch` nor `default` was started, stopped, or changed.
+
+The original generated 64-byte session name passed Herdr's parser but could not start its server because the resulting Unix-socket path was too long.
+A 49-byte boundary name also failed, while this 43-byte control succeeded exactly:
+
+```text
+SESSION=fm-lab-short-control-3744740248-26081-19813 LEN=43
+{"client":{"version":"0.7.3","channel":"stable","protocol":16,"binary":"/Users/dmitrijarkov/.local/bin/herdr","session":"fm-lab-short-control-3744740248-26081-19813"},"server":{"status":"running","running":true,"version":"0.7.3","protocol":16,"capabilities":{"live_handoff":true,"detached_server_daemon":false},"compatible":true,"socket":"/Users/dmitrijarkov/.config/herdr/sessions/fm-lab-short-control-3744740248-26081-19813/herdr.sock","session":"fm-lab-short-control-3744740248-26081-19813","restart_needed":false},"update":{"restart_needed":false}}
+```
+
+The helper therefore retains the verified 64-byte validation ceiling for explicit names but generates names at an empirical 43-byte ceiling, lowering that further when the current home path leaves less Unix-socket room.
+Generated names retain a digest of the full task id plus process/random uniqueness, so deterministic truncation does not collapse long ids with a shared prefix.
+
+Treehouse created and leased the disposable worktree first:
+
+```text
+treehouse get --lease --lease-holder lab-child-workspace-proof-20260712
+/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate
+```
+
+Every Herdr call below was issued through the repaired task-worktree helper, which appended the trailing isolated session flag:
+
+```text
+HERDR_LAB_HELPER=/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/4/firstmate/bin/fm-herdr-lab.sh
+HERDR_LAB_SESSION=fm-lab-implement-herd-1569349952-80654-8265
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" workspace create --cwd /Users/dmitrijarkov/dev/firstmate --label 2ndmate-arena-crm-secondmate --no-focus
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" worktree open --workspace w1 --path /Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate --label lab-child-workspace-proof-20260712 --no-focus --json
+```
+
+The exact identity-bearing `worktree open` result was:
+
+```json
+{"id":"cli:worktree:open","result":{"already_open":false,"root_pane":{"agent_status":"unknown","cwd":"/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate","focused":false,"foreground_cwd":"/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate","pane_id":"w2:p1","revision":0,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":23},"tab_id":"w2:t1","terminal_id":"term_6565808f79a972","workspace_id":"w2"},"tab":{"agent_status":"unknown","focused":false,"label":"1","number":1,"pane_count":1,"tab_id":"w2:t1","workspace_id":"w2"},"type":"worktree_opened","workspace":{"active_tab_id":"w2:t1","agent_status":"unknown","focused":false,"label":"lab-child-workspace-proof-20260712","number":2,"pane_count":1,"tab_count":1,"workspace_id":"w2","worktree":{"checkout_path":"/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate","is_linked_worktree":true,"repo_key":"/Users/dmitrijarkov/dev/firstmate/.git","repo_name":"firstmate","repo_root":"/Users/dmitrijarkov/dev/firstmate"}},"worktree":{"is_bare":false,"is_detached":true,"is_linked_worktree":true,"is_prunable":false,"label":"firstmate","open_workspace_id":"w2","path":"/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate"}}}
+```
+
+`workspace list` then reported parent `w1` with `is_linked_worktree:false` and child `w2` with the exact Treehouse checkout path, shared `repo_key`, `is_linked_worktree:true`, and exact task-id label.
+Using the task worktree itself as the source parent correctly refused with `{"error":{"code":"linked_worktree_source","message":"New and open worktree actions start from the repo parent workspace."},"id":"cli:worktree:open"}`.
+This proves that the visible secondmate parent must be associated with the project clone rather than its persistent FirstMate home or another linked worktree.
+
+Presentation teardown used only the workspace-close path:
+
+```text
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" workspace close w2
+{"id":"cli:workspace:close","result":{"type":"ok"}}
+TREEHOUSE_AFTER_HERDR_CLOSE=present
+treehouse return /Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/5/firstmate
+🌳 Worktree returned to pool.
+```
+
+After `workspace close w2`, `git worktree list --porcelain` still contained the Treehouse path and the directory still existed.
+Only the subsequent `treehouse return` released it.
+This is the empirical split-ownership contract: Herdr owns and closes the child presentation first; Treehouse alone owns creation, lease protection, return, pruning, and removal.
+
+### Runtime metadata projection and evidence tabs
+
+`bin/fm-fleet-snapshot.sh` is the owner of FirstMate's normalized read-only runtime projection.
+For each task worktree it checks `<worktree>/.arena/worktree-runtime.json` without assuming that `.arena` exists.
+The projection records the source path, observation time, validation state, source age, schema, slug, apps, ports, URLs, Supabase target/ownership/stack id, proof directory, and log directory when present.
+The declared `worktreePath` must physically resolve to the task worktree before any project fields are trusted.
+Missing metadata renders `absent`, malformed or mismatched metadata renders `invalid`, and a valid source older than `FM_RUNTIME_METADATA_STALE_SECONDS` (default 86400) renders `stale`.
+None of these states claims that a runtime service is healthy.
+`bin/fm-fleet-view.sh` renders the projection status and slug from the structured snapshot instead of reparsing project files.
+
+For native Herdr children, `fm_backend_herdr_surface_runtime_evidence` may create at most three tabs named `Runtime`, `Logs`, and `Proof` inside the existing child workspace.
+It creates no additional sidebar workspace and invokes no project lifecycle command.
+Phase one has no start, stop, restart, port-allocation, or metadata-write control.
 
 ## ID stability across a server restart
 

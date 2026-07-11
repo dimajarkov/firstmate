@@ -634,6 +634,62 @@ test_workspace_find_matches_only_this_homes_own_label() {
   pass "fm_backend_herdr_workspace_find: matches only THIS home's own label among several coexisting workspaces"
 }
 
+test_workspace_matches_project_uses_durable_identity() {
+  local dir log resp fb project status=0
+  dir="$TMP_ROOT/workspace-project-identity"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  project="$dir/arena-crm"; mkdir -p "$project"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"anything","worktree":{"checkout_path":"%s","is_linked_worktree":false}}]}}\n' "$project" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_matches_project fmtest w7 "$1"' "$ROOT" "$project" || status=$?
+  expect_code 0 "$status" "workspace/project identity match should succeed"
+  pass "fm_backend_herdr_workspace_matches_project: uses recorded workspace id and checkout identity, not display label"
+}
+
+test_open_treehouse_child_uses_existing_path_and_exact_task_id() {
+  local dir log resp fb path path_real out
+  dir="$TMP_ROOT/open-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  path_real=$(cd "$path" && pwd -P)
+  printf '{"result":{"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path")
+  [ "$out" = "w9 w9:t1 w9:p1" ] || fail "native child ids were not parsed: $out"
+  assert_contains "$(cat "$log")" $'worktree\x1fopen\x1f--workspace\x1fw2\x1f--path\x1f'"$path_real"$'\x1f--label\x1fexact-task-id' \
+    "native child open did not use the parent id, existing path, and exact task-id label"
+  pass "fm_backend_herdr_open_treehouse_child: opens an existing Treehouse path with the exact task-id label"
+}
+
+test_kill_child_closes_workspace_presentation() {
+  local dir log resp fb
+  dir="$TMP_ROOT/kill-child-workspace"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_kill fmtest:w9:p1 w9' "$ROOT"
+  assert_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "child teardown did not close the workspace presentation"
+  assert_not_contains "$(cat "$log")" $'pane\x1fclose' "child teardown must not fall back to legacy pane close"
+  pass "fm_backend_herdr_kill: native child teardown closes the workspace presentation by durable id"
+}
+
+test_runtime_evidence_stays_inside_child_workspace() {
+  local dir log resp fb wt out
+  dir="$TMP_ROOT/runtime-evidence-tabs"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  wt="$dir/worktree"; mkdir -p "$wt/.arena/dev-logs" "$wt/proof"
+  printf '{"worktreePath":"%s","proofDirectory":"%s"}\n' "$wt" "$wt/proof" > "$wt/.arena/worktree-runtime.json"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t2"}}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t3"}}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t4"}}}' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_surface_runtime_evidence fmtest w9 "$1"' "$ROOT" "$wt")
+  [ "$out" = $'w9:t2\tw9:t3\tw9:t4' ] || fail "runtime evidence tab ids were not returned: $out"
+  [ "$(grep -c $'\x1ftab\x1fcreate\x1f--workspace\x1fw9' "$log")" -eq 3 ] \
+    || fail "runtime evidence should create exactly three bounded tabs inside child w9"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fcreate' "runtime evidence must not create another sidebar workspace"
+  pass "fm_backend_herdr_surface_runtime_evidence: runtime, logs, and proof stay as bounded read-only tabs inside the child workspace"
+}
+
 # --- list_live: scoped to this home's own workspace only ---------------------
 
 test_list_live_scoped_to_this_homes_workspace_only() {
@@ -655,6 +711,22 @@ test_list_live_scoped_to_this_homes_workspace_only() {
   assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w1' \
     "list_live must never query the primary's (or a sibling secondmate's) workspace"
   pass "fm_backend_herdr_list_live: scoped to this home's own workspace, never a sibling home's"
+}
+
+test_list_live_discovers_native_child_by_repo_identity() {
+  local dir log resp fb out home
+  dir="$TMP_ROOT/list-live-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/list-live-child-home"; mkdir -p "$home"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","label":"2ndmate-bravo-b2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","label":"renamed-parent","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}},{"workspace_id":"w8","label":"foreign-task","worktree":{"repo_key":"/repo/other","is_linked_worktree":true}}]}}' > "$resp/3.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}' > "$resp/4.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
+  [ "$out" = $'fmtest:w9:p1\tfm-exact-task-id' ] || fail "native child recovery discovery used label alone or included a foreign repo: $out"
+  pass "fm_backend_herdr_list_live: native recovery uses parent repo plus linked-worktree identity and excludes foreign children"
 }
 
 # --- target parsing, key normalization ---------------------------------------
@@ -1696,7 +1768,12 @@ test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
 test_workspace_find_matches_only_this_homes_own_label
+test_workspace_matches_project_uses_durable_identity
+test_open_treehouse_child_uses_existing_path_and_exact_task_id
+test_kill_child_closes_workspace_presentation
+test_runtime_evidence_stays_inside_child_workspace
 test_list_live_scoped_to_this_homes_workspace_only
+test_list_live_discovers_native_child_by_repo_identity
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

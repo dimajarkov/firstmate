@@ -13,6 +13,10 @@ TRIPWIRES="$TMP_ROOT/tripwires"
 REAL_SLEEP=$(command -v sleep)
 mkdir -p "$FAKE_STATE"
 printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+printf '%s\n' false > "$FAKE_STATE/default-running"
+printf '%s\n' scratch > "$FAKE_STATE/primary-name"
+printf '%s\n' true > "$FAKE_STATE/primary-running"
+printf '%s\n' true > "$FAKE_STATE/primary-present"
 : > "$FAKE_LOG"
 
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -28,19 +32,25 @@ done
 [ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
 session=$last
 default_socket=$(cat "$state/default-socket")
+default_running=$(cat "$state/default-running")
+primary_name=$(cat "$state/primary-name")
+primary_running=$(cat "$state/primary-running")
+primary_present=$(cat "$state/primary-present")
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
   "session list")
-    if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
-    else
-      running=false
-      [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
-    fi
+    running=false
+    [ "$lab_state" = running ] && running=true
+    jq -nc --arg socket "$default_socket" --argjson default_running "$default_running" \
+      --arg primary "$primary_name" --argjson primary_running "$primary_running" \
+      --argjson primary_present "$primary_present" --arg lab "$session" \
+      --arg lab_state "$lab_state" --argjson lab_running "$running" '
+        [{default:true,name:"default",running:$default_running,socket_path:$socket}]
+        + (if $primary_present then [{default:false,name:$primary,running:$primary_running,socket_path:("/tmp/" + $primary + ".sock")}] else [] end)
+        + (if ($lab_state == "absent" or $lab_state == "deleted") then [] else [{default:false,name:$lab,running:$lab_running,socket_path:("/tmp/" + $lab + ".sock")}] end)
+        | {sessions:.}'
     ;;
   "server --session")
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
@@ -83,18 +93,39 @@ run_with_fake() {
     FM_FAKE_HERDR_FAST_POLL="${FM_FAKE_HERDR_FAST_POLL:-}" \
     FM_FAKE_HERDR_DELETE_FAIL="${FM_FAKE_HERDR_DELETE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
+    HERDR_SESSION=scratch \
     "$@"
 }
 
 test_refuses_unsafe_names() {
-  local status=0
+  local status=0 long_name
   fm_herdr_lab_validate_name default >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "literal default must be refused"
   status=0
   fm_herdr_lab_validate_name arbitrary-session >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "non-lab prefix must be refused"
+  long_name="fm-lab-$(printf 'x%.0s' {1..58})"
+  status=0
+  fm_herdr_lab_validate_name "$long_name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "names beyond Herdr's 64-byte limit must be refused locally"
   fm_herdr_lab_validate_name fm-lab-safe-123 || fail "valid lab session name was refused"
-  pass "fm-herdr-lab: names fail closed and require the lab prefix"
+  pass "fm-herdr-lab: names fail closed and enforce the lab prefix and Herdr's length limit"
+}
+
+test_generated_names_fit_herdr_limit() {
+  local label name digest generated_limit
+  label=implement-herdr-treehouse-child-workspaces-20260712
+  digest=$(printf '%s' "$label" | cksum | awk '{print $1}')
+  generated_limit=$(fm_herdr_lab_generated_name_limit)
+  name=$(fm_herdr_lab_name "$label")
+  [ "${#name}" -le 64 ] || fail "generated lab session name exceeds Herdr's 64-byte limit: $name"
+  [ "${#name}" -le "$generated_limit" ] || fail "generated lab session name exceeds the Unix-socket path budget: $name"
+  fm_herdr_lab_validate_name "$name" || fail "generated length-safe lab session name was refused: $name"
+  case "$name" in
+    fm-lab-implement-*"-$digest-"*-*) : ;;
+    *) fail "generated length-safe lab session lost its readable label or unique suffix: $name" ;;
+  esac
+  pass "fm-herdr-lab: long task labels retain deterministic identity and collision resistance within Herdr's 64-byte limit"
 }
 
 test_provision_run_and_guarded_teardown() {
@@ -104,6 +135,9 @@ test_provision_run_and_guarded_teardown() {
   run_with_fake fm_herdr_lab_provision "$name" || fail "provision failed"
   [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "provision did not start the named lab session"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "provision did not record the fleet-state tripwire"
+  jq -e '.primary == "scratch" and (.sessions | map(select(.name == "default" and .running == false)) | length) == 1 and (.sessions | map(select(.name == "scratch" and .running == true)) | length) == 1' \
+    "$TRIPWIRES/$name.fleet-state.json" >/dev/null \
+    || fail "tripwire did not preserve the stopped default and running named primary"
 
   run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null || fail "safe run command failed"
   run_with_fake fm_herdr_lab_cli "$name" server >/dev/null 2>&1 || status=$?
@@ -165,17 +199,45 @@ test_missing_tripwire_blocks_destruction() {
   pass "fm-herdr-lab: missing tripwire refuses teardown before any Herdr call"
 }
 
-test_changed_default_trips_after_teardown() {
+test_changed_preexisting_session_trips_after_teardown() {
   local name="fm-lab-tripwire-change-$$" status=0
   : > "$FAKE_LOG"
   run_with_fake fm_herdr_lab_provision "$name" || fail "tripwire fixture provision failed"
-  printf '%s\n' '/changed/default.sock' > "$FAKE_STATE/default-socket"
+  printf '%s\n' true > "$FAKE_STATE/default-running"
   run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
-  expect_code 1 "$status" "changed default fleet state must fail teardown"
+  expect_code 1 "$status" "changed pre-existing session state must fail teardown"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire should retain evidence"
-  printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
-  rm -f "$TRIPWIRES/$name.fleet-state.json"
-  pass "fm-herdr-lab: changed default fleet state is a hard failure"
+  printf '%s\n' false > "$FAKE_STATE/default-running"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "restored fleet state did not release the retained tripwire"
+  pass "fm-herdr-lab: any changed pre-existing session state is a hard failure"
+}
+
+test_active_primary_must_be_present_and_running() {
+  local missing="fm-lab-primary-missing-$$" stopped="fm-lab-primary-stopped-$$" status=0
+  printf '%s\n' false > "$FAKE_STATE/primary-present"
+  run_with_fake fm_herdr_lab_provision "$missing" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "missing active primary must block provisioning"
+  assert_absent "$TRIPWIRES/$missing.fleet-state.json" "missing primary left a lab ownership tripwire"
+  printf '%s\n' true > "$FAKE_STATE/primary-present"
+
+  status=0
+  printf '%s\n' false > "$FAKE_STATE/primary-running"
+  run_with_fake fm_herdr_lab_provision "$stopped" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "stopped active primary must block provisioning"
+  assert_absent "$TRIPWIRES/$stopped.fleet-state.json" "stopped primary left a lab ownership tripwire"
+  printf '%s\n' true > "$FAKE_STATE/primary-running"
+  pass "fm-herdr-lab: HERDR_SESSION must identify one present running primary session"
+}
+
+test_existing_session_name_collision_is_refused() {
+  local name="fm-lab-collision-$$" status=0
+  printf '%s\n' stopped > "$FAKE_STATE/$name"
+  run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "an existing session name collision must be refused"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "collision refusal left a lab ownership tripwire"
+  [ "$(cat "$FAKE_STATE/$name")" = stopped ] || fail "collision refusal altered the pre-existing session"
+  rm -f "$FAKE_STATE/$name"
+  pass "fm-herdr-lab: lab names cannot collide with any existing session"
 }
 
 test_stopped_owned_lab_can_reprovision() {
@@ -232,9 +294,12 @@ SH
 }
 
 test_refuses_unsafe_names
+test_generated_names_fit_herdr_limit
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
-test_changed_default_trips_after_teardown
+test_changed_preexisting_session_trips_after_teardown
+test_active_primary_must_be_present_and_running
+test_existing_session_name_collision_is_refused
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch

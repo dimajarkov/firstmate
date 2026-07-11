@@ -1242,6 +1242,48 @@ test_local_only_force_overrides_unpushed() {
   pass "local-only worktree with unpushed work is torn down under --force (escape hatch)"
 }
 
+test_herdr_child_presentation_closes_before_treehouse_return() {
+  local case_dir rc workspace_line return_line
+  case_dir=$(make_case herdr-child-order)
+  write_meta "$case_dir" local-only ship
+  cat >> "$case_dir/state/task-x1.meta" <<'EOF'
+backend=herdr
+window=scratch:w9:p1
+herdr_layout=child-workspace
+herdr_child_workspace_id=w9
+EOF
+  cat > "$case_dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "status --json" ]; then
+  printf '%s\n' '{"server":{"running":true}}'
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = "workspace close" ]; then
+  printf 'workspace-close:%s\n' "${3:-}" >> "${ORDER_LOG:?}"
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  printf 'treehouse-return:%s\n' "${*: -1}" >> "${ORDER_LOG:?}"
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/herdr" "$case_dir/fakebin/treehouse"
+  : > "$case_dir/order.log"
+  set +e
+  ORDER_LOG="$case_dir/order.log" run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "Herdr child teardown should complete"
+  workspace_line=$(grep -n '^workspace-close:w9$' "$case_dir/order.log" | cut -d: -f1)
+  return_line=$(grep -n '^treehouse-return:' "$case_dir/order.log" | cut -d: -f1)
+  [ -n "$workspace_line" ] && [ -n "$return_line" ] && [ "$workspace_line" -lt "$return_line" ] \
+    || fail "Herdr child presentation was not closed before Treehouse return: $(cat "$case_dir/order.log")"
+  pass "native Herdr child presentation closes before guarded Treehouse return"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1250,6 +1292,7 @@ test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
+test_herdr_child_presentation_closes_before_treehouse_return
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

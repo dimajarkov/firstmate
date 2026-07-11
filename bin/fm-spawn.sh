@@ -185,6 +185,9 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+HERDR_ABORT_TREEHOUSE=0
+HERDR_ABORT_CHILD_WORKSPACE=
+HERDR_ABORT_SESSION=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -205,6 +208,15 @@ parse_orca_worktree_result() {
 
 orca_spawn_abort_cleanup() {
   local status=$?
+  if [ "$HERDR_ABORT_TREEHOUSE" = 1 ]; then
+    HERDR_ABORT_TREEHOUSE=0
+    if [ -n "$HERDR_ABORT_CHILD_WORKSPACE" ] && [ -n "$HERDR_ABORT_SESSION" ]; then
+      fm_backend_herdr_cli "$HERDR_ABORT_SESSION" workspace close "$HERDR_ABORT_CHILD_WORKSPACE" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${WT:-}" ] && [ -d "$WT" ]; then
+      (cd "$PROJ_ABS" && treehouse return "$WT") >/dev/null 2>&1 || true
+    fi
+  fi
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
   if [ -n "${ORCA_TERMINAL:-}" ]; then
@@ -713,10 +725,29 @@ case "$BACKEND" in
     # after each prefixed simple-command call) so the secondmate's tab lands
     # in the secondmate's own workspace, not the primary's "firstmate" one.
     HERDR_LABEL_HOME=$FM_HOME
+    HERDR_PARENT_CWD=$PROJ_ABS
+    HERDR_PARENT_PROJECT=
+    HERDR_LAYOUT=legacy-tab
+    HERDR_CHILD_WORKSPACE_ID=
+    HERDR_RUNTIME_TAB_ID=
+    HERDR_LOGS_TAB_ID=
+    HERDR_PROOF_TAB_ID=
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
+      HERDR_PARENT_PROJECTS=$(secondmate_registry_value "$ID" projects || true)
+      case "$HERDR_PARENT_PROJECTS" in
+        ''|*,*) : ;;
+        *)
+          HERDR_PARENT_PROJECT="$PROJ_ABS/projects/$HERDR_PARENT_PROJECTS"
+          if [ -d "$HERDR_PARENT_PROJECT" ] && git -C "$HERDR_PARENT_PROJECT" rev-parse --show-toplevel >/dev/null 2>&1; then
+            HERDR_PARENT_CWD=$HERDR_PARENT_PROJECT
+          else
+            HERDR_PARENT_PROJECT=
+          fi
+          ;;
+      esac
     fi
-    HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS") || exit 1
+    HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$HERDR_PARENT_CWD") || exit 1
     # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
     # (the second field empty when this call ADOPTED a pre-existing workspace
     # rather than creating a fresh one). Split on the guaranteed single tab
@@ -727,10 +758,31 @@ case "$BACKEND" in
     HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
     HERDR_SES=${CONTAINER%%:*}
     HERDR_WORKSPACE_ID=${CONTAINER#*:}
-    HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
-    read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+    HERDR_PARENT_WORKSPACE_ID=$HERDR_WORKSPACE_ID
+    if [ "$KIND" != secondmate ] && [ -f "$FM_HOME/$SUB_HOME_MARKER" ] \
+      && fm_backend_herdr_workspace_matches_project "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$PROJ_ABS"; then
+      WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || exit 1
+      HERDR_ABORT_TREEHOUSE=1
+      HERDR_ABORT_SESSION=$HERDR_SES
+      validate_spawn_worktree "treehouse get --lease" "$CONTAINER"
+      HERDR_TASK_IDS=$(fm_backend_herdr_open_treehouse_child "$CONTAINER" "$ID" "$WT") || exit 1
+      read -r HERDR_CHILD_WORKSPACE_ID HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
+      HERDR_WORKSPACE_ID=$HERDR_CHILD_WORKSPACE_ID
+      HERDR_ABORT_CHILD_WORKSPACE=$HERDR_CHILD_WORKSPACE_ID
+      HERDR_LAYOUT=child-workspace
+      HERDR_EVIDENCE_TABS=$(fm_backend_herdr_surface_runtime_evidence "$HERDR_SES" "$HERDR_CHILD_WORKSPACE_ID" "$WT")
+      HERDR_RUNTIME_TAB_ID=${HERDR_EVIDENCE_TABS%%$'\t'*}
+      HERDR_EVIDENCE_REST=${HERDR_EVIDENCE_TABS#*$'\t'}
+      HERDR_LOGS_TAB_ID=${HERDR_EVIDENCE_REST%%$'\t'*}
+      HERDR_PROOF_TAB_ID=${HERDR_EVIDENCE_REST#*$'\t'}
+    else
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
+$HERDR_TASK_IDS
+EOF
+    fi
     if [ -z "$HERDR_TAB_ID" ] || [ -z "$HERDR_PANE_ID" ]; then
       echo "error: herdr did not return a tab/pane id for $W" >&2
       exit 1
@@ -828,7 +880,7 @@ spawn_send_key() {  # <target> <key>
     cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
   esac
 }
-if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ] && [ -z "$WT" ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -1001,9 +1053,17 @@ META_WINDOW=$T
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
+    echo "herdr_layout=$HERDR_LAYOUT"
+    echo "herdr_parent_workspace_id=$HERDR_PARENT_WORKSPACE_ID"
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    [ -z "$HERDR_CHILD_WORKSPACE_ID" ] || echo "herdr_child_workspace_id=$HERDR_CHILD_WORKSPACE_ID"
+    [ -z "$HERDR_PARENT_PROJECT" ] || echo "herdr_parent_project=$HERDR_PARENT_PROJECT"
+    [ -z "$HERDR_RUNTIME_TAB_ID" ] || echo "herdr_runtime_tab_id=$HERDR_RUNTIME_TAB_ID"
+    [ -z "$HERDR_LOGS_TAB_ID" ] || echo "herdr_logs_tab_id=$HERDR_LOGS_TAB_ID"
+    [ -z "$HERDR_PROOF_TAB_ID" ] || echo "herdr_proof_tab_id=$HERDR_PROOF_TAB_ID"
+    [ "$HERDR_LAYOUT" != child-workspace ] || echo "treehouse_path=$WT"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"
@@ -1024,6 +1084,7 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+[ "$BACKEND" != herdr ] || HERDR_ABORT_TREEHOUSE=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

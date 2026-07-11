@@ -19,8 +19,9 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Provision records every pre-existing session's name and running state plus
+# the active primary session selected by HERDR_SESSION.
+# Teardown requires that record to be identical afterward.
 set -u
 
 fm_herdr_lab_error() {
@@ -29,6 +30,10 @@ fm_herdr_lab_error() {
 
 fm_herdr_lab_validate_name() { # <session>
   local name=${1:-}
+  if [ "${#name}" -gt 64 ]; then
+    fm_herdr_lab_error "session name cannot exceed Herdr's verified 64-byte limit: $name"
+    return 1
+  fi
   [[ "$name" =~ ^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] && return 0
   case "$name" in
     default) fm_herdr_lab_error "refusing session name 'default'" ;;
@@ -56,31 +61,36 @@ fm_herdr_lab_session_list() { # <session>
   fm_herdr_lab_raw "$1" session list --json
 }
 
-fm_herdr_lab_fleet_state() { # <session>
-  local name=$1 sessions snapshot
+fm_herdr_lab_fleet_state() { # <lab-session> <active-primary-session>
+  local name=$1 primary=$2 sessions snapshot
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
     fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
     return 1
   }
-  snapshot=$(printf '%s' "$sessions" | jq -c '
-    [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
-      then .[0] | {name, default, running, socket_path}
-      else empty
+  snapshot=$(printf '%s' "$sessions" | jq -ce --arg lab "$name" --arg primary "$primary" '
+    if (.sessions | type) != "array" then error("missing sessions array") else . end
+    | [.sessions[] | select(.name != $lab) | {name, running}] as $existing
+    | if ([$existing[] | select(.name == $primary and .running == true)] | length) != 1
+      then error("active primary session is absent, duplicated, or stopped")
+      else {primary: $primary, sessions: ($existing | sort_by(.name))}
       end
   ' 2>/dev/null)
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "fleet-state tripwire requires HERDR_SESSION to name exactly one running pre-existing primary session"
     return 1
   }
   printf '%s\n' "$snapshot"
 }
 
 fm_herdr_lab_prepare() { # <session>
-  local name=$1 sessions state_dir tripwire
+  local name=$1 sessions state_dir tripwire primary=${HERDR_SESSION:-}
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
+  [ -n "$primary" ] || {
+    fm_herdr_lab_error "HERDR_SESSION must name the active primary session before provisioning a lab"
+    return 1
+  }
 
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
     fm_herdr_lab_error "cannot list Herdr sessions before provisioning '$name'"
@@ -98,7 +108,7 @@ fm_herdr_lab_prepare() { # <session>
     fm_herdr_lab_error "tripwire already exists for '$name'; refusing ambiguous ownership"
     return 1
   }
-  fm_herdr_lab_fleet_state "$name" > "$tripwire" || {
+  fm_herdr_lab_fleet_state "$name" "$primary" > "$tripwire" || {
     rm -f "$tripwire"
     return 1
   }
@@ -214,16 +224,20 @@ fm_herdr_lab_provision() { # <session>
 }
 
 fm_herdr_lab_check_tripwire() { # <session>
-  local name=$1 tripwire before after
+  local name=$1 tripwire before after primary
   tripwire=$(fm_herdr_lab_tripwire_path "$name")
   [ -f "$tripwire" ] || {
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing unverified teardown"
     return 1
   }
   before=$(cat "$tripwire")
-  after=$(fm_herdr_lab_fleet_state "$name") || return 1
+  primary=$(printf '%s' "$before" | jq -er '.primary | select(type == "string" and length > 0)' 2>/dev/null) || {
+    fm_herdr_lab_error "fleet-state tripwire for '$name' is malformed; refusing destructive calls"
+    return 1
+  }
+  after=$(fm_herdr_lab_fleet_state "$name" "$primary") || return 1
   [ "$before" = "$after" ] || {
-    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: default session changed during lab work"
+    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: a pre-existing session changed during lab work"
     fm_herdr_lab_error "before: $before"
     fm_herdr_lab_error "after:  $after"
     return 1
@@ -284,11 +298,37 @@ fm_herdr_lab_teardown() { # <session>
   fm_herdr_lab_verify_tripwire "$name"
 }
 
+fm_herdr_lab_generated_name_limit() {
+  local limit=43 socket_path_without_name available
+  # Herdr 0.7.3 accepts 64-byte names, but on macOS the resulting Unix socket
+  # must also fit in sockaddr_un.sun_path (103 usable bytes plus the NUL).
+  # A 49-byte boundary name still failed server startup on the verified home,
+  # while a 43-byte control succeeded. Keep that empirical ceiling and lower
+  # it further for unusually long home paths.
+  socket_path_without_name="${HOME}/.config/herdr/sessions//herdr.sock"
+  available=$((103 - ${#socket_path_without_name}))
+  [ "$available" -ge "$limit" ] || limit=$available
+  printf '%s' "$limit"
+}
+
 fm_herdr_lab_name() { # <label>
-  local label=${1:-lab}
+  local label=${1:-lab} prefix=fm-lab- suffix max_label digest name_limit
   label=$(printf '%s' "$label" | tr -cd 'a-zA-Z0-9_-' | sed 's/^[^a-zA-Z0-9]*//; s/-*$//')
   [ -n "$label" ] || label=lab
-  printf 'fm-lab-%s-%s-%s\n' "$label" "$$" "$RANDOM"
+  digest=$(printf '%s' "$label" | cksum | awk '{print $1}')
+  suffix="-$digest-$$-$RANDOM"
+  name_limit=$(fm_herdr_lab_generated_name_limit)
+  max_label=$((name_limit - ${#prefix} - ${#suffix}))
+  if [ "$max_label" -lt 1 ]; then
+    fm_herdr_lab_error "Herdr session socket path leaves no safe room for a generated lab name under HOME=$HOME"
+    return 1
+  fi
+  # The digest makes deterministic truncation distinguish long labels with a
+  # shared prefix; the process/random suffix keeps concurrent runs
+  # collision-resistant.
+  label=${label:0:max_label}
+  label=${label%-}
+  printf '%s%s%s\n' "$prefix" "$label" "$suffix"
 }
 
 fm_herdr_lab_usage() {

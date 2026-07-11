@@ -150,6 +150,77 @@ first_pr_url_in_file() {  # <file>
   grep -Eo 'https?://[^[:space:])"]+/pull/[0-9]+' "$1" 2>/dev/null | head -1
 }
 
+runtime_metadata_json() {  # <worktree>
+  local worktree=$1 source observed raw declared actual expected mtime now age stale_after status validation logs proof
+  source="$worktree/.arena/worktree-runtime.json"
+  observed=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  if [ ! -f "$source" ]; then
+    jq -n --arg source "$source" --arg observed "$observed" \
+      '{status:"absent",validation:"missing",observed_at:$observed,source:{path:$source,present:false}}'
+    return 0
+  fi
+  raw=$(jq -c . "$source" 2>/dev/null) || {
+    jq -n --arg source "$source" --arg observed "$observed" \
+      '{status:"invalid",validation:"malformed",observed_at:$observed,source:{path:$source,present:true}}'
+    return 0
+  }
+  declared=$(printf '%s' "$raw" | jq -r '.worktreePath // empty' 2>/dev/null)
+  expected=$(cd "$worktree" 2>/dev/null && pwd -P) || expected=$worktree
+  actual=
+  [ -z "$declared" ] || actual=$(cd "$declared" 2>/dev/null && pwd -P) || actual=
+  if [ -z "$actual" ] || [ "$actual" != "$expected" ]; then
+    jq -n --arg source "$source" --arg observed "$observed" --arg declared "$declared" --arg expected "$expected" \
+      '{status:"invalid",validation:"mismatched",observed_at:$observed,source:{path:$source,present:true},worktree_path:{declared:($declared|if .=="" then null else . end),actual:$expected}}'
+    return 0
+  fi
+  mtime=$(stat -c '%Y' "$source" 2>/dev/null || stat -f '%m' "$source" 2>/dev/null || printf 0)
+  now=$(date +%s)
+  stale_after=${FM_RUNTIME_METADATA_STALE_SECONDS:-86400}
+  case "$mtime:$stale_after" in
+    *[!0-9:]*|:*) age=0; status=invalid; validation=malformed ;;
+    *)
+      age=$((now - mtime))
+      if [ "$age" -gt "$stale_after" ]; then status=stale; else status=valid; fi
+      validation=valid
+      ;;
+  esac
+  logs=$(printf '%s' "$raw" | jq -r '.logDirectory // .logDir // empty' 2>/dev/null)
+  [ -n "$logs" ] || [ ! -d "$worktree/.arena/dev-logs" ] || logs="$worktree/.arena/dev-logs"
+  proof=$(printf '%s' "$raw" | jq -r '.proofDirectory // .proofDir // empty' 2>/dev/null)
+  case "$logs" in ''|/*) : ;; *) logs="$worktree/$logs" ;; esac
+  case "$proof" in ''|/*) : ;; *) proof="$worktree/$proof" ;; esac
+  jq -n \
+    --argjson document "$raw" \
+    --arg status "$status" \
+    --arg validation "$validation" \
+    --arg source "$source" \
+    --arg observed "$observed" \
+    --arg worktree "$expected" \
+    --arg logs "$logs" \
+    --arg proof "$proof" \
+    --argjson mtime "$mtime" \
+    --argjson age "$age" \
+    '{
+      status:$status,
+      validation:$validation,
+      observed_at:$observed,
+      source:{path:$source,present:true,mtime_epoch:$mtime,age_seconds:$age},
+      schema:($document.schemaVersion // $document.schema // null),
+      worktree_path:{declared:$document.worktreePath,actual:$worktree},
+      slug:($document.slug // null),
+      apps:($document.apps // []),
+      ports:($document.ports // {}),
+      urls:($document.urls // {}),
+      supabase:{
+        target:($document.supabase.target // $document.supabaseTarget // null),
+        ownership:($document.supabase.ownership // $document.supabaseOwnership // null),
+        stack_id:($document.supabase.stackId // $document.supabaseStackId // null)
+      },
+      proof_directory:($proof|if .=="" then null else . end),
+      log_directory:($logs|if .=="" then null else . end)
+    }'
+}
+
 backlog_json() {
   if [ ! -f "$BACKLOG" ]; then
     jq -n --arg path "$BACKLOG" '{path:$path,present:false,records:[]}'
@@ -273,7 +344,8 @@ backlog_json() {
 
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
-  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
+  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json runtime_json
+  local herdr_layout herdr_session herdr_parent_workspace herdr_child_workspace herdr_tab herdr_pane herdr_parent_project
   local last_event_raw last_event_verb current_state pending_decision blocked_event report_present=0 pr_from_status
 
   for meta in "$STATE"/*.meta; do
@@ -288,6 +360,14 @@ task_json_lines() {
     worktree=$(meta_value "$meta" worktree)
     home=$(meta_value "$meta" home)
     projects=$(meta_value "$meta" projects)
+    herdr_layout=$(meta_value "$meta" herdr_layout)
+    [ -n "$herdr_layout" ] || herdr_layout=legacy-tab
+    herdr_session=$(meta_value "$meta" herdr_session)
+    herdr_parent_workspace=$(meta_value "$meta" herdr_parent_workspace_id)
+    herdr_child_workspace=$(meta_value "$meta" herdr_child_workspace_id)
+    herdr_tab=$(meta_value "$meta" herdr_tab_id)
+    herdr_pane=$(meta_value "$meta" herdr_pane_id)
+    herdr_parent_project=$(meta_value "$meta" herdr_parent_project)
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     status_log="$STATE/$id.status"
@@ -332,6 +412,7 @@ task_json_lines() {
     report_json=$(path_present_json "$report_path")
     if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
     if [ -n "$home" ]; then home_json=$(path_present_json "$home"); else home_json=$(jq -n '{path:null,present:false}'); fi
+    if [ -n "$worktree" ]; then runtime_json=$(runtime_metadata_json "$worktree"); else runtime_json=$(jq -n '{status:"absent",validation:"missing",observed_at:null,source:{path:null,present:false}}'); fi
 
     jq -n \
       --arg id "$id" \
@@ -345,6 +426,13 @@ task_json_lines() {
       --arg projects "$projects" \
       --arg backend "$backend" \
       --arg target "$target" \
+      --arg herdr_layout "$herdr_layout" \
+      --arg herdr_session "$herdr_session" \
+      --arg herdr_parent_workspace "$herdr_parent_workspace" \
+      --arg herdr_child_workspace "$herdr_child_workspace" \
+      --arg herdr_tab "$herdr_tab" \
+      --arg herdr_pane "$herdr_pane" \
+      --arg herdr_parent_project "$herdr_parent_project" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
@@ -356,6 +444,7 @@ task_json_lines() {
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
+      --argjson runtime "$runtime_json" \
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
@@ -377,6 +466,16 @@ task_json_lines() {
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:$current_state,
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive},
+        presentation:{
+          layout:(if $backend == "herdr" then $herdr_layout else null end),
+          session:($herdr_session|if .=="" then null else . end),
+          parent_workspace_id:($herdr_parent_workspace|if .=="" then null else . end),
+          child_workspace_id:($herdr_child_workspace|if .=="" then null else . end),
+          tab_id:($herdr_tab|if .=="" then null else . end),
+          pane_id:($herdr_pane|if .=="" then null else . end),
+          parent_project:($herdr_parent_project|if .=="" then null else . end)
+        },
+        runtime:$runtime,
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source},
         hints:{
           pending_decision:$pending_decision,

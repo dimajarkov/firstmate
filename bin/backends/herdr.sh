@@ -11,14 +11,11 @@
 # normal operation; the unit tests source it directly, so the FM_HOME fallback
 # below keeps that path sane without fm-backend.sh's preamble.
 #
-# Container shape (D4, decided empirically - see herdr-verification-p2.md
-# "Task container shape", refined by docs/herdr-backend.md "Task container
-# shape"): ONE herdr workspace PER FIRSTMATE HOME (the primary, and each
-# secondmate, gets its own), ONE herdr TAB per task inside its home's
-# workspace. Workspace-per-task was tried and rejected (bad human-watching
-# ergonomics); workspace-per-HOME keeps that same rejection while giving every
-# home its own space, labeled distinctly, in the shared spaces sidebar. Target
-# resolution and the human-watch story stay parallel to the tmux adapter.
+# Container shape (docs/herdr-backend.md "Task container shape"): one parent
+# workspace per FirstMate home. Eligible single-project secondmate tasks use
+# native child workspaces opened from Treehouse-owned paths; primary tasks,
+# secondmate agents, legacy parents, and project-less/multi-project homes retain
+# the tab-per-task fallback.
 #
 # Target string shape: "<herdr-session>:<pane-id>", e.g. "default:w1:p2" (the
 # pane id itself contains a colon; the session is always the FIRST field, the
@@ -29,10 +26,10 @@
 # function has no herdr-specific logic; it just returns meta's window=
 # verbatim).
 #
-# Recovery/orphan discovery (ids may not deterministically match live state
-# after a server restart in a differently-configured session; see the
-# verification doc) uses LABEL matching (fm-<id> tab labels), never trusts a
-# stored pane id blindly: fm_backend_herdr_list_live.
+# Normal recovery uses durable ids from task metadata.
+# Orphan discovery keeps legacy label matching and discovers native children by
+# repository plus linked-checkout identity before synthesizing the legacy
+# fm-<id> recovery label: fm_backend_herdr_list_live.
 #
 # Requires: herdr (CLI + socket), jq (JSON parsing). Both are gated behind
 # selecting this backend; bin/fm-bootstrap.sh's core tool list is unaffected.
@@ -326,6 +323,66 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace>
     return 1
   fi
   printf '%s:%s\t%s' "$session" "$FM_BACKEND_HERDR_WS_ID" "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
+}
+
+# A project-associated secondmate parent is eligible for native child
+# workspaces only when its durable workspace id resolves to the same checkout
+# as the project clone.
+# Label equality is deliberately irrelevant here.
+fm_backend_herdr_workspace_matches_project() {  # <session> <workspace_id> <project-path>
+  local session=$1 wsid=$2 project=$3 list actual expected
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  actual=$(printf '%s' "$list" | jq -r --arg id "$wsid" \
+    '.result.workspaces[]? | select(.workspace_id == $id and (.worktree.is_linked_worktree // false) == false) | .worktree.checkout_path // empty' 2>/dev/null)
+  [ -n "$actual" ] || return 1
+  expected=$(cd "$project" 2>/dev/null && pwd -P) || return 1
+  actual=$(cd "$actual" 2>/dev/null && pwd -P) || return 1
+  [ "$actual" = "$expected" ]
+}
+
+# Open an existing Treehouse-owned worktree as a native Herdr child workspace.
+# Herdr creates presentation state only; it never creates, removes, prunes, or
+# returns the Git worktree.
+# Echoes "<workspace_id> <tab_id> <pane_id>".
+fm_backend_herdr_open_treehouse_child() {  # <container> <task-id> <treehouse-path>
+  local container=$1 task_id=$2 path=$3 session parent out workspace tab pane actual
+  session=${container%%:*}
+  parent=${container#*:}
+  actual=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  out=$(fm_backend_herdr_cli "$session" worktree open --workspace "$parent" --path "$actual" --label "$task_id" --no-focus --json 2>/dev/null) || return 1
+  workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
+  tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] || return 1
+  printf '%s %s %s' "$workspace" "$tab" "$pane"
+}
+
+# Add at most three read-only evidence tabs inside a child workspace.
+# The function never starts or controls project services and never creates
+# another sidebar workspace.
+# Echoes "<runtime-tab>\t<logs-tab>\t<proof-tab>" with empty fields allowed.
+fm_backend_herdr_surface_runtime_evidence() {  # <session> <workspace-id> <worktree>
+  local session=$1 workspace=$2 worktree=$3 source runtime_tab='' logs_tab='' proof_tab='' out logs proof declared
+  source="$worktree/.arena/worktree-runtime.json"
+  if [ -f "$source" ] && jq -e . "$source" >/dev/null 2>&1; then
+    declared=$(jq -r '.worktreePath // empty' "$source" 2>/dev/null)
+    if [ -n "$declared" ] && [ "$(cd "$declared" 2>/dev/null && pwd -P)" = "$(cd "$worktree" 2>/dev/null && pwd -P)" ]; then
+      out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" --cwd "$worktree" --label Runtime --no-focus 2>/dev/null) || out=''
+      runtime_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+      logs=$(jq -r '.logDirectory // .logDir // empty' "$source" 2>/dev/null)
+      [ -n "$logs" ] || logs="$worktree/.arena/dev-logs"
+      if [ -d "$logs" ]; then
+        out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" --cwd "$logs" --label Logs --no-focus 2>/dev/null) || out=''
+        logs_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+      fi
+      proof=$(jq -r '.proofDirectory // .proofDir // empty' "$source" 2>/dev/null)
+      if [ -n "$proof" ] && [ -d "$proof" ]; then
+        out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" --cwd "$proof" --label Proof --no-focus 2>/dev/null) || out=''
+        proof_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+      fi
+    fi
+  fi
+  printf '%s\t%s\t%s' "$runtime_tab" "$logs_tab" "$proof_tab"
 }
 
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
@@ -855,8 +912,12 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
 # tmux-kill-window's `|| true` contract). Verified: closing a tab's only pane
 # closes the tab too, so a separate tab close is unnecessary.
-fm_backend_herdr_kill() {  # <target>
+fm_backend_herdr_kill() {  # <target> [child-workspace-id]
   fm_backend_herdr_target_ready "$1" || return 0
+  if [ -n "${2:-}" ]; then
+    fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" workspace close "$2" >/dev/null 2>&1 || true
+    return 0
+  fi
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane close "$FM_BACKEND_HERDR_PANE" >/dev/null 2>&1 || true
 }
 
@@ -1037,7 +1098,7 @@ EOF
 # workspace that does not exist yet simply lists nothing. One
 # "<session>:<pane_id>\t<label>" line per live task tab.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
+  local session=$1 wsid tabs tab_id label pane_id workspaces parent_repo child_wsid child_tab
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
@@ -1047,4 +1108,23 @@ fm_backend_herdr_list_live() {  # <session>
     [ -n "$pane_id" ] || continue
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
   done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+
+  # New native children are discovered by repository linkage and their linked
+  # checkout identity, never by display label alone.
+  workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 0
+  parent_repo=$(printf '%s' "$workspaces" | jq -r --arg id "$wsid" \
+    '.result.workspaces[]? | select(.workspace_id == $id) | .worktree.repo_key // empty' 2>/dev/null)
+  [ -n "$parent_repo" ] || return 0
+  while IFS=$'\t' read -r child_wsid label; do
+    [ -n "$child_wsid" ] && [ -n "$label" ] || continue
+    tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$child_wsid" 2>/dev/null) || continue
+    child_tab=$(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label == "1") | .tab_id' 2>/dev/null | head -1)
+    [ -n "$child_tab" ] || continue
+    pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$child_wsid" "$child_tab") || continue
+    [ -n "$pane_id" ] || continue
+    printf '%s:%s\tfm-%s\n' "$session" "$pane_id" "$label"
+  done < <(printf '%s' "$workspaces" | jq -r --arg parent "$wsid" --arg repo "$parent_repo" '
+    .result.workspaces[]?
+    | select(.workspace_id != $parent and (.worktree.is_linked_worktree // false) == true and .worktree.repo_key == $repo)
+    | "\(.workspace_id)\t\(.label)"' 2>/dev/null)
 }

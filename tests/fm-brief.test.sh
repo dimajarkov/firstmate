@@ -122,10 +122,12 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing the per-call trailing session contract"
   assert_grep "direct \`herdr server stop\`" "$brief" \
     "Herdr lab brief missing the forbidden server-global command list"
-  assert_grep "records the live default session before provisioning" "$brief" \
-    "Herdr lab brief missing the before tripwire"
-  assert_grep "verifies the identical fleet state after teardown" "$brief" \
-    "Herdr lab brief missing the after tripwire"
+  assert_grep "snapshots every pre-existing Herdr session by name and running state" "$brief" \
+    "Herdr lab brief missing the before all-session tripwire"
+  assert_grep "verifies the byte-identical snapshot after teardown" "$brief" \
+    "Herdr lab brief missing the after all-session tripwire"
+  assert_grep '`HERDR_SESSION` must name one running pre-existing primary session' "$brief" \
+    "Herdr lab brief missing the active-primary protection contract"
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
