@@ -164,6 +164,32 @@ runtime_metadata_json() {  # <worktree>
       '{status:"invalid",validation:"malformed",observed_at:$observed,source:{path:$source,present:true}}'
     return 0
   }
+  if ! printf '%s' "$raw" | jq -e '
+    def optional_type($key; $kind):
+      (has($key) | not) or .[$key] == null or (.[$key] | type) == $kind;
+    type == "object"
+      and (.worktreePath | type) == "string"
+      and optional_type("slug"; "string")
+      and optional_type("apps"; "array")
+      and optional_type("ports"; "object")
+      and optional_type("urls"; "object")
+      and optional_type("supabase"; "object")
+      and optional_type("supabaseTarget"; "string")
+      and optional_type("supabaseOwnership"; "string")
+      and optional_type("supabaseStackId"; "string")
+      and optional_type("logDirectory"; "string")
+      and optional_type("logDir"; "string")
+      and optional_type("proofDirectory"; "string")
+      and optional_type("proofDir"; "string")
+      and ((.supabase // {})
+        | optional_type("target"; "string")
+        and optional_type("ownership"; "string")
+        and optional_type("stackId"; "string"))
+  ' >/dev/null 2>&1; then
+    jq -n --arg source "$source" --arg observed "$observed" \
+      '{status:"invalid",validation:"schema",observed_at:$observed,source:{path:$source,present:true}}'
+    return 0
+  fi
   declared=$(printf '%s' "$raw" | jq -r '.worktreePath // empty' 2>/dev/null)
   expected=$(cd "$worktree" 2>/dev/null && pwd -P) || expected=$worktree
   actual=

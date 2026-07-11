@@ -177,7 +177,7 @@ test_runtime_metadata_states() {
   local home fakebin out view wt wt_real id
   home=$(make_home runtime-metadata)
   fakebin=$(make_fakebin "$home")
-  for id in valid missing malformed mismatched stale; do
+  for id in valid missing malformed schema-invalid mismatched stale; do
     wt="$home/projects/$id-worktree"
     mkdir -p "$wt"
     fm_write_meta "$home/state/$id.meta" \
@@ -207,8 +207,9 @@ test_runtime_metadata_states() {
   cat > "$home/projects/valid-worktree/.arena/worktree-runtime.json" <<EOF
 {"schemaVersion":1,"worktreePath":"$home/projects/valid-worktree","slug":"runtime-valid","apps":["dash"],"ports":{"dash":3091},"urls":{"dash":"http://127.0.0.1:3091"},"supabase":{"ownership":"shared","stackId":"arena-local"},"proofDirectory":"proof"}
 EOF
-  mkdir -p "$home/projects/malformed-worktree/.arena" "$home/projects/mismatched-worktree/.arena" "$home/projects/stale-worktree/.arena"
+  mkdir -p "$home/projects/malformed-worktree/.arena" "$home/projects/schema-invalid-worktree/.arena" "$home/projects/mismatched-worktree/.arena" "$home/projects/stale-worktree/.arena"
   printf '{bad json\n' > "$home/projects/malformed-worktree/.arena/worktree-runtime.json"
+  printf '{"worktreePath":"%s","supabase":"local"}\n' "$home/projects/schema-invalid-worktree" > "$home/projects/schema-invalid-worktree/.arena/worktree-runtime.json"
   printf '{"worktreePath":"%s","slug":"wrong"}\n' "$home/projects/other-worktree" > "$home/projects/mismatched-worktree/.arena/worktree-runtime.json"
   printf '{"worktreePath":"%s","slug":"runtime-stale"}\n' "$home/projects/stale-worktree" > "$home/projects/stale-worktree/.arena/worktree-runtime.json"
   touch -t 202001010000 "$home/projects/stale-worktree/.arena/worktree-runtime.json"
@@ -230,6 +231,8 @@ EOF
     || fail "missing runtime metadata must be absent"
   printf '%s' "$out" | jq -e '.tasks[] | select(.id == "malformed") | .runtime.status == "invalid" and .runtime.validation == "malformed"' >/dev/null \
     || fail "malformed runtime metadata must be invalid"
+  printf '%s' "$out" | jq -e '.tasks[] | select(.id == "schema-invalid") | .runtime.status == "invalid" and .runtime.validation == "schema"' >/dev/null \
+    || fail "wrong nested runtime metadata types must produce a stable invalid schema projection"
   printf '%s' "$out" | jq -e '.tasks[] | select(.id == "mismatched") | .runtime.status == "invalid" and .runtime.validation == "mismatched" and .runtime.slug == null' >/dev/null \
     || fail "mismatched runtime metadata must be invalid and untrusted"
   printf '%s' "$out" | jq -e '.tasks[] | select(.id == "stale") | .runtime.status == "stale" and .runtime.slug == "runtime-stale"' >/dev/null \

@@ -854,7 +854,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_container_id
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_container_id child_session child_presentation_closed
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -876,12 +876,22 @@ cleanup_firstmate_home_children() {
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
       fi
     fi
-    if [ -n "$child_t" ]; then
-      child_container_id=$(meta_value "$child_meta" zellij_tab_id)
-      if [ "$child_backend" = herdr ]; then
-        child_container_id=$(meta_value "$child_meta" herdr_child_workspace_id)
+    child_container_id=$(meta_value "$child_meta" zellij_tab_id)
+    child_presentation_closed=0
+    if [ "$child_backend" = herdr ]; then
+      child_container_id=$(meta_value "$child_meta" herdr_child_workspace_id)
+      if [ -n "$child_container_id" ]; then
+        child_session=$(meta_value "$child_meta" herdr_session)
+        [ -n "$child_session" ] || { echo "error: missing herdr_session in $child_meta" >&2; return 1; }
+        fm_backend_source herdr || return 1
+        fm_backend_herdr_close_treehouse_child "$child_session" "$child_container_id" "$child_wt" || return 1
+        child_presentation_closed=1
       fi
-      if [ "$child_backend" = zellij ]; then
+    fi
+    if [ -n "$child_t" ]; then
+      if [ "$child_presentation_closed" = 1 ]; then
+        :
+      elif [ "$child_backend" = zellij ]; then
         # Zellij titles are scoped by the owning home tag, so forced secondmate
         # cleanup must verify child tabs as that child home, not the parent.
         ( unset FM_ROOT_OVERRIDE; FM_HOME=$home FM_ROOT=$home fm_backend_kill "$child_backend" "$child_t" "$child_container_id" "fm-$child_id" ) 2>/dev/null || true
@@ -993,7 +1003,11 @@ fi
 # the worktree.
 HERDR_PRESENTATION_CLOSED=0
 if [ "$BACKEND" = herdr ] && [ -n "$(meta_value "$META" herdr_child_workspace_id)" ]; then
-  fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" herdr_child_workspace_id)" 2>/dev/null || true
+  HERDR_SESSION=$(meta_value "$META" herdr_session)
+  HERDR_CHILD_WORKSPACE_ID=$(meta_value "$META" herdr_child_workspace_id)
+  [ -n "$HERDR_SESSION" ] || { echo "error: missing herdr_session in $META" >&2; exit 1; }
+  fm_backend_source herdr || exit 1
+  fm_backend_herdr_close_treehouse_child "$HERDR_SESSION" "$HERDR_CHILD_WORKSPACE_ID" "$WT" || exit 1
   HERDR_PRESENTATION_CLOSED=1
 fi
 

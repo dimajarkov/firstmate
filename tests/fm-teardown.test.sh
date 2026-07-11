@@ -1250,6 +1250,7 @@ test_herdr_child_presentation_closes_before_treehouse_return() {
 backend=herdr
 window=scratch:w9:p1
 herdr_layout=child-workspace
+herdr_session=scratch
 herdr_child_workspace_id=w9
 EOF
   cat > "$case_dir/fakebin/herdr" <<'SH'
@@ -1258,8 +1259,17 @@ if [ "${1:-} ${2:-}" = "status --json" ]; then
   printf '%s\n' '{"server":{"running":true}}'
   exit 0
 fi
+if [ "${1:-} ${2:-}" = "workspace list" ]; then
+  if [ -f "${ORDER_LOG:?}.closed" ]; then
+    printf '%s\n' '{"result":{"workspaces":[]}}'
+  else
+    printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "${HERDR_WT:?}"
+  fi
+  exit 0
+fi
 if [ "${1:-} ${2:-}" = "workspace close" ]; then
   printf 'workspace-close:%s\n' "${3:-}" >> "${ORDER_LOG:?}"
+  : > "${ORDER_LOG:?}.closed"
 fi
 exit 0
 SH
@@ -1273,7 +1283,7 @@ SH
   chmod +x "$case_dir/fakebin/herdr" "$case_dir/fakebin/treehouse"
   : > "$case_dir/order.log"
   set +e
-  ORDER_LOG="$case_dir/order.log" run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  ORDER_LOG="$case_dir/order.log" HERDR_WT="$case_dir/wt" run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
   expect_code 0 "$rc" "Herdr child teardown should complete"
@@ -1282,6 +1292,45 @@ SH
   [ -n "$workspace_line" ] && [ -n "$return_line" ] && [ "$workspace_line" -lt "$return_line" ] \
     || fail "Herdr child presentation was not closed before Treehouse return: $(cat "$case_dir/order.log")"
   pass "native Herdr child presentation closes before guarded Treehouse return"
+}
+
+test_herdr_child_close_failure_blocks_treehouse_return() {
+  local case_dir rc
+  case_dir=$(make_case herdr-child-close-failure)
+  write_meta "$case_dir" local-only ship
+  cat >> "$case_dir/state/task-x1.meta" <<'EOF'
+backend=herdr
+window=scratch:w9:p1
+herdr_layout=child-workspace
+herdr_session=scratch
+herdr_child_workspace_id=w9
+EOF
+  cat > "$case_dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "workspace list" ]; then
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "${HERDR_WT:?}"
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = "workspace close" ]; then
+  exit 1
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' called >> "${RETURN_LOG:?}"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/herdr" "$case_dir/fakebin/treehouse"
+  : > "$case_dir/return.log"
+  set +e
+  HERDR_WT="$case_dir/wt" RETURN_LOG="$case_dir/return.log" run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "failed Herdr child closure must abort teardown"
+  [ ! -s "$case_dir/return.log" ] || fail "Treehouse return ran after Herdr child closure failed"
+  assert_grep "failed to close herdr child workspace w9" "$case_dir/stderr" "child close failure was not reported"
+  pass "failed native Herdr child closure blocks Treehouse return"
 }
 
 test_local_only_fork_remote_allows
@@ -1293,6 +1342,7 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_herdr_child_presentation_closes_before_treehouse_return
+test_herdr_child_close_failure_blocks_treehouse_return
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows

@@ -27,9 +27,8 @@
 # verbatim).
 #
 # Normal recovery uses durable ids from task metadata.
-# Orphan discovery keeps legacy label matching and discovers native children by
-# repository plus linked-checkout identity before synthesizing the legacy
-# fm-<id> recovery label: fm_backend_herdr_list_live.
+# Discovery keeps legacy tab label matching, while native children require
+# matching durable task metadata plus live repository and checkout identity.
 #
 # Requires: herdr (CLI + socket), jq (JSON parsing). Both are gated behind
 # selecting this backend; bin/fm-bootstrap.sh's core tool list is unaffected.
@@ -340,20 +339,92 @@ fm_backend_herdr_workspace_matches_project() {  # <session> <workspace_id> <proj
   [ "$actual" = "$expected" ]
 }
 
+fm_backend_herdr_child_for_task() {  # <session> <parent-workspace-id> <task-id>
+  local session=$1 parent=$2 task_id=$3 list parent_repo
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  parent_repo=$(printf '%s' "$list" | jq -r --arg id "$parent" '
+    if (.result.workspaces | type) == "array" then
+      .result.workspaces[]? | select(.workspace_id == $id) | .worktree.repo_key // empty
+    else error("missing result.workspaces") end' 2>/dev/null) || return 1
+  [ -n "$parent_repo" ] || return 1
+  printf '%s' "$list" | jq -r --arg parent "$parent" --arg repo "$parent_repo" --arg task "$task_id" '
+    .result.workspaces[]?
+    | select(.workspace_id != $parent
+        and .label == $task
+        and (.worktree.is_linked_worktree // false) == true
+        and .worktree.repo_key == $repo)
+    | .workspace_id' 2>/dev/null | head -1
+}
+
+fm_backend_herdr_close_treehouse_child() {  # <session> <workspace-id> <treehouse-path>
+  local session=$1 workspace=$2 path=$3 list entry declared expected actual
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
+    echo "error: could not inspect herdr child workspace $workspace in session $session" >&2
+    return 1
+  }
+  if ! printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1; then
+    echo "error: could not parse herdr workspace list in session $session" >&2
+    return 1
+  fi
+  entry=$(printf '%s' "$list" | jq -c --arg id "$workspace" '.result.workspaces[]? | select(.workspace_id == $id)' 2>/dev/null | head -1)
+  [ -n "$entry" ] || return 0
+  if ! printf '%s' "$entry" | jq -e '(.worktree.is_linked_worktree // false) == true and (.worktree.checkout_path | type) == "string"' >/dev/null 2>&1; then
+    echo "error: herdr workspace $workspace is not a linked worktree presentation" >&2
+    return 1
+  fi
+  declared=$(printf '%s' "$entry" | jq -r '.worktree.checkout_path')
+  expected=$(cd "$path" 2>/dev/null && pwd -P) || {
+    echo "error: cannot resolve Treehouse path $path before closing herdr workspace $workspace" >&2
+    return 1
+  }
+  actual=$(cd "$declared" 2>/dev/null && pwd -P) || {
+    echo "error: cannot resolve herdr workspace $workspace checkout path $declared" >&2
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "error: herdr workspace $workspace checkout $actual does not match Treehouse path $expected" >&2
+    return 1
+  fi
+  fm_backend_herdr_cli "$session" workspace close "$workspace" >/dev/null 2>&1 || {
+    echo "error: failed to close herdr child workspace $workspace in session $session" >&2
+    return 1
+  }
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
+    echo "error: could not confirm closure of herdr child workspace $workspace in session $session" >&2
+    return 1
+  }
+  if ! printf '%s' "$list" | jq -e '(.result.workspaces | type) == "array"' >/dev/null 2>&1; then
+    echo "error: could not parse herdr workspace list while confirming closure in session $session" >&2
+    return 1
+  fi
+  if printf '%s' "$list" | jq -e --arg id "$workspace" '.result.workspaces[]? | select(.workspace_id == $id)' >/dev/null 2>&1; then
+    echo "error: herdr child workspace $workspace remains open in session $session" >&2
+    return 1
+  fi
+}
+
 # Open an existing Treehouse-owned worktree as a native Herdr child workspace.
 # Herdr creates presentation state only; it never creates, removes, prunes, or
 # returns the Git worktree.
 # Echoes "<workspace_id> <tab_id> <pane_id>".
 fm_backend_herdr_open_treehouse_child() {  # <container> <task-id> <treehouse-path>
-  local container=$1 task_id=$2 path=$3 session parent out workspace tab pane actual
+  local container=$1 task_id=$2 path=$3 session parent out workspace tab pane actual already_open declared
   session=${container%%:*}
   parent=${container#*:}
   actual=$(cd "$path" 2>/dev/null && pwd -P) || return 1
   out=$(fm_backend_herdr_cli "$session" worktree open --workspace "$parent" --path "$actual" --label "$task_id" --no-focus --json 2>/dev/null) || return 1
+  already_open=$(printf '%s' "$out" | jq -r 'if (.result | has("already_open")) then .result.already_open else empty end' 2>/dev/null)
+  if [ "$already_open" != false ]; then
+    echo "error: herdr refused a new child workspace for task '$task_id' because the checkout was already open" >&2
+    return 1
+  fi
   workspace=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] || return 1
+  declared=$(printf '%s' "$out" | jq -r '.result.workspace.worktree.checkout_path // empty' 2>/dev/null)
+  [ -n "$workspace" ] && [ -n "$tab" ] && [ -n "$pane" ] && [ -n "$declared" ] || return 1
+  [ "$(cd "$declared" 2>/dev/null && pwd -P)" = "$actual" ] || return 1
+  printf '%s' "$out" | jq -e '(.result.workspace.worktree.is_linked_worktree // false) == true' >/dev/null 2>&1 || return 1
   printf '%s %s %s' "$workspace" "$tab" "$pane"
 }
 
@@ -371,11 +442,13 @@ fm_backend_herdr_surface_runtime_evidence() {  # <session> <workspace-id> <workt
       runtime_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
       logs=$(jq -r '.logDirectory // .logDir // empty' "$source" 2>/dev/null)
       [ -n "$logs" ] || logs="$worktree/.arena/dev-logs"
+      case "$logs" in ''|/*) : ;; *) logs="$worktree/$logs" ;; esac
       if [ -d "$logs" ]; then
         out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" --cwd "$logs" --label Logs --no-focus 2>/dev/null) || out=''
         logs_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
       fi
       proof=$(jq -r '.proofDirectory // .proofDir // empty' "$source" 2>/dev/null)
+      case "$proof" in ''|/*) : ;; *) proof="$worktree/$proof" ;; esac
       if [ -n "$proof" ] && [ -d "$proof" ]; then
         out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" --cwd "$proof" --label Proof --no-focus 2>/dev/null) || out=''
         proof_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
@@ -1086,7 +1159,7 @@ EOF
   return 1
 }
 
-# fm_backend_herdr_list_live: recovery/orphan discovery. Lists every tab whose
+# fm_backend_herdr_list_live: recovery discovery. Lists every tab whose
 # label looks like a firstmate task window (fm-<id>) in <session>'s, THIS
 # HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
 # home's), by LABEL - never by trusting a stored pane id, since ids are not
@@ -1096,9 +1169,11 @@ EOF
 # workspace because FM_HOME already names it - no glue needed, unlike the
 # primary-spawns-a-secondmate path in fm-spawn.sh. Read-only: a session/
 # workspace that does not exist yet simply lists nothing. One
-# "<session>:<pane_id>\t<label>" line per live task tab.
+# Native child workspaces are reported only when their recorded session,
+# parent, child, task id, repository, and checkout path all match live Herdr
+# state. One "<session>:<pane_id>\t<label>" line per live task presentation.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id workspaces parent_repo child_wsid child_tab
+  local session=$1 wsid tabs tab_id label pane_id workspaces parent_repo child_wsid child_tab meta task_id meta_session meta_layout meta_parent meta_child meta_worktree entry declared actual expected
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
@@ -1109,22 +1184,39 @@ fm_backend_herdr_list_live() {  # <session>
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
   done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
 
-  # New native children are discovered by repository linkage and their linked
-  # checkout identity, never by display label alone.
   workspaces=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 0
   parent_repo=$(printf '%s' "$workspaces" | jq -r --arg id "$wsid" \
     '.result.workspaces[]? | select(.workspace_id == $id) | .worktree.repo_key // empty' 2>/dev/null)
   [ -n "$parent_repo" ] || return 0
-  while IFS=$'\t' read -r child_wsid label; do
-    [ -n "$child_wsid" ] && [ -n "$label" ] || continue
+  for meta in "$FM_HOME"/state/*.meta; do
+    [ -f "$meta" ] || continue
+    meta_session=$(sed -n 's/^herdr_session=//p' "$meta" | head -1)
+    meta_layout=$(sed -n 's/^herdr_layout=//p' "$meta" | head -1)
+    meta_parent=$(sed -n 's/^herdr_parent_workspace_id=//p' "$meta" | head -1)
+    meta_child=$(sed -n 's/^herdr_child_workspace_id=//p' "$meta" | head -1)
+    meta_worktree=$(sed -n 's/^worktree=//p' "$meta" | head -1)
+    [ "$meta_session" = "$session" ] && [ "$meta_layout" = child-workspace ] && [ "$meta_parent" = "$wsid" ] || continue
+    [ -n "$meta_child" ] && [ -n "$meta_worktree" ] || continue
+    task_id=$(basename "$meta" .meta)
+    entry=$(printf '%s' "$workspaces" | jq -c --arg id "$meta_child" --arg parent "$wsid" --arg repo "$parent_repo" --arg task "$task_id" '
+      .result.workspaces[]?
+      | select(.workspace_id == $id
+          and .workspace_id != $parent
+          and .label == $task
+          and (.worktree.is_linked_worktree // false) == true
+          and .worktree.repo_key == $repo
+          and (.worktree.checkout_path | type) == "string")' 2>/dev/null | head -1)
+    [ -n "$entry" ] || continue
+    declared=$(printf '%s' "$entry" | jq -r '.worktree.checkout_path')
+    actual=$(cd "$declared" 2>/dev/null && pwd -P) || continue
+    expected=$(cd "$meta_worktree" 2>/dev/null && pwd -P) || continue
+    [ "$actual" = "$expected" ] || continue
+    child_wsid=$meta_child
     tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$child_wsid" 2>/dev/null) || continue
     child_tab=$(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label == "1") | .tab_id' 2>/dev/null | head -1)
     [ -n "$child_tab" ] || continue
     pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$child_wsid" "$child_tab") || continue
     [ -n "$pane_id" ] || continue
-    printf '%s:%s\tfm-%s\n' "$session" "$pane_id" "$label"
-  done < <(printf '%s' "$workspaces" | jq -r --arg parent "$wsid" --arg repo "$parent_repo" '
-    .result.workspaces[]?
-    | select(.workspace_id != $parent and (.worktree.is_linked_worktree // false) == true and .worktree.repo_key == $repo)
-    | "\(.workspace_id)\t\(.label)"' 2>/dev/null)
+    printf '%s:%s\tfm-%s\n' "$session" "$pane_id" "$task_id"
+  done
 }

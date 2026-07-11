@@ -189,6 +189,31 @@ HERDR_ABORT_TREEHOUSE=0
 HERDR_ABORT_CHILD_WORKSPACE=
 HERDR_ABORT_SESSION=
 
+preserve_herdr_abort_meta() {
+  mkdir -p "$STATE" 2>/dev/null || return 0
+  {
+    echo "window=${T:-${HERDR_ABORT_SESSION:-}:${HERDR_PANE_ID:-}}"
+    echo "worktree=${WT:-}"
+    echo "project=$PROJ_ABS"
+    echo "harness=$HARNESS"
+    echo "kind=$KIND"
+    echo "mode=${MODE:-no-mistakes}"
+    echo "yolo=${YOLO:-off}"
+    echo "tasktmp=${TASK_TMP:-}"
+    echo "model=${MODEL:-default}"
+    echo "effort=${EFFORT:-default}"
+    echo "backend=herdr"
+    echo "herdr_session=${HERDR_ABORT_SESSION:-}"
+    echo "herdr_layout=${HERDR_LAYOUT:-child-workspace}"
+    echo "herdr_parent_workspace_id=${HERDR_PARENT_WORKSPACE_ID:-}"
+    echo "herdr_workspace_id=${HERDR_CHILD_WORKSPACE_ID:-${HERDR_PARENT_WORKSPACE_ID:-}}"
+    echo "herdr_tab_id=${HERDR_TAB_ID:-}"
+    echo "herdr_pane_id=${HERDR_PANE_ID:-}"
+    [ -z "${HERDR_ABORT_CHILD_WORKSPACE:-}" ] || echo "herdr_child_workspace_id=$HERDR_ABORT_CHILD_WORKSPACE"
+    echo "treehouse_path=${WT:-}"
+  } > "$STATE/$ID.meta" 2>/dev/null || true
+}
+
 parse_orca_worktree_result() {
   local raw=$1 rest
   ORCA_WORKTREE_ID=${raw%%$'\t'*}
@@ -207,15 +232,23 @@ parse_orca_worktree_result() {
 }
 
 orca_spawn_abort_cleanup() {
-  local status=$?
+  local status=$? herdr_cleanup_failed=0
   if [ "$HERDR_ABORT_TREEHOUSE" = 1 ]; then
-    HERDR_ABORT_TREEHOUSE=0
     if [ -n "$HERDR_ABORT_CHILD_WORKSPACE" ] && [ -n "$HERDR_ABORT_SESSION" ]; then
-      fm_backend_herdr_cli "$HERDR_ABORT_SESSION" workspace close "$HERDR_ABORT_CHILD_WORKSPACE" >/dev/null 2>&1 || true
+      if ! fm_backend_herdr_close_treehouse_child "$HERDR_ABORT_SESSION" "$HERDR_ABORT_CHILD_WORKSPACE" "$WT"; then
+        herdr_cleanup_failed=1
+      fi
     fi
-    if [ -n "${WT:-}" ] && [ -d "$WT" ]; then
-      (cd "$PROJ_ABS" && treehouse return "$WT") >/dev/null 2>&1 || true
+    if [ "$herdr_cleanup_failed" = 0 ] && [ -n "${WT:-}" ] && [ -d "$WT" ]; then
+      if ! (cd "$PROJ_ABS" && treehouse return "$WT"); then
+        echo "error: spawn abort could not return Treehouse lease $WT; recovery metadata preserved at $STATE/$ID.meta" >&2
+        herdr_cleanup_failed=1
+      fi
     fi
+    if [ "$herdr_cleanup_failed" = 1 ]; then
+      preserve_herdr_abort_meta
+    fi
+    HERDR_ABORT_TREEHOUSE=0
   fi
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
@@ -761,6 +794,14 @@ case "$BACKEND" in
     HERDR_PARENT_WORKSPACE_ID=$HERDR_WORKSPACE_ID
     if [ "$KIND" != secondmate ] && [ -f "$FM_HOME/$SUB_HOME_MARKER" ] \
       && fm_backend_herdr_workspace_matches_project "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$PROJ_ABS"; then
+      HERDR_EXISTING_CHILD=$(fm_backend_herdr_child_for_task "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$ID") || {
+        echo "error: could not verify native Herdr child uniqueness for task '$ID'" >&2
+        exit 1
+      }
+      if [ -n "$HERDR_EXISTING_CHILD" ]; then
+        echo "error: native Herdr child for task '$ID' already exists as workspace $HERDR_EXISTING_CHILD" >&2
+        exit 1
+      fi
       WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || exit 1
       HERDR_ABORT_TREEHOUSE=1
       HERDR_ABORT_SESSION=$HERDR_SES

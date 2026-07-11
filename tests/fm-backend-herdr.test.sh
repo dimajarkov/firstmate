@@ -651,7 +651,7 @@ test_open_treehouse_child_uses_existing_path_and_exact_task_id() {
   dir="$TMP_ROOT/open-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   path="$dir/treehouse-worktree"; mkdir -p "$path"
   path_real=$(cd "$path" && pwd -P)
-  printf '{"result":{"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/1.out"
+  printf '{"result":{"already_open":false,"workspace":{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' "$path_real" > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path")
@@ -659,6 +659,60 @@ test_open_treehouse_child_uses_existing_path_and_exact_task_id() {
   assert_contains "$(cat "$log")" $'worktree\x1fopen\x1f--workspace\x1fw2\x1f--path\x1f'"$path_real"$'\x1f--label\x1fexact-task-id' \
     "native child open did not use the parent id, existing path, and exact task-id label"
   pass "fm_backend_herdr_open_treehouse_child: opens an existing Treehouse path with the exact task-id label"
+}
+
+test_child_for_task_rejects_existing_exact_id() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/existing-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","label":"parent","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}},{"workspace_id":"w8","label":"exact-task-id","worktree":{"repo_key":"/repo/other","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_child_for_task fmtest w2 exact-task-id' "$ROOT")
+  [ "$out" = w9 ] || fail "exact task-id lookup did not find the existing child: $out"
+  assert_not_contains "$(cat "$log")" $'\x1fworktree\x1fopen' "duplicate detection must not open or acquire another child"
+  pass "fm_backend_herdr_child_for_task: detects an exact-id child within the parent repository"
+}
+
+test_open_treehouse_child_rejects_already_open() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/already-open-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '%s\n' '{"result":{"already_open":true,"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_open_treehouse_child fmtest:w2 exact-task-id "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "already_open:true must be rejected outside recovery"
+  assert_contains "$out" "already open" "already-open refusal was not explicit"
+  pass "fm_backend_herdr_open_treehouse_child: refuses Herdr already_open adoption"
+}
+
+test_close_treehouse_child_verifies_identity_and_disappearance() {
+  local dir log resp fb path status=0
+  dir="$TMP_ROOT/close-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
+  : > "$resp/2.out"
+  printf '%s\n' '{"result":{"workspaces":[]}}' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_close_treehouse_child fmtest w9 "$1"' "$ROOT" "$path" || status=$?
+  expect_code 0 "$status" "verified child close should succeed"
+  assert_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "verified child close did not close the workspace"
+  pass "fm_backend_herdr_close_treehouse_child: verifies checkout identity and confirmed closure"
+}
+
+test_close_treehouse_child_refuses_reused_workspace_id() {
+  local dir log resp fb path other out status=0
+  dir="$TMP_ROOT/reused-treehouse-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; other="$dir/other-worktree"; mkdir -p "$path" "$other"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","worktree":{"checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$other" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_close_treehouse_child fmtest w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "reused workspace id with another checkout must be refused"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "identity mismatch must not close the reused workspace"
+  assert_contains "$out" "does not match Treehouse path" "identity mismatch refusal was not explicit"
+  pass "fm_backend_herdr_close_treehouse_child: refuses a stale or reused workspace id"
 }
 
 test_kill_child_closes_workspace_presentation() {
@@ -675,8 +729,8 @@ test_kill_child_closes_workspace_presentation() {
 test_runtime_evidence_stays_inside_child_workspace() {
   local dir log resp fb wt out
   dir="$TMP_ROOT/runtime-evidence-tabs"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  wt="$dir/worktree"; mkdir -p "$wt/.arena/dev-logs" "$wt/proof"
-  printf '{"worktreePath":"%s","proofDirectory":"%s"}\n' "$wt" "$wt/proof" > "$wt/.arena/worktree-runtime.json"
+  wt="$dir/worktree"; mkdir -p "$wt/logs" "$wt/proof" "$wt/.arena"
+  printf '{"worktreePath":"%s","logDirectory":"logs","proofDirectory":"proof"}\n' "$wt" > "$wt/.arena/worktree-runtime.json"
   printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t2"}}}' > "$resp/1.out"
   printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t3"}}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"tab":{"tab_id":"w9:t4"}}}' > "$resp/3.out"
@@ -714,19 +768,27 @@ test_list_live_scoped_to_this_homes_workspace_only() {
 }
 
 test_list_live_discovers_native_child_by_repo_identity() {
-  local dir log resp fb out home
+  local dir log resp fb out home wt
   dir="$TMP_ROOT/list-live-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/list-live-child-home"; mkdir -p "$home"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
+  home="$TMP_ROOT/list-live-child-home"; wt="$dir/treehouse-worktree"; mkdir -p "$home/state" "$wt"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
+  cat > "$home/state/exact-task-id.meta" <<EOF
+backend=herdr
+worktree=$wt
+herdr_session=fmtest
+herdr_layout=child-workspace
+herdr_parent_workspace_id=w2
+herdr_child_workspace_id=w9
+EOF
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","label":"2ndmate-bravo-b2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}}]}}' > "$resp/1.out"
   printf '%s\n' '{"result":{"tabs":[]}}' > "$resp/2.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","label":"renamed-parent","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}},{"workspace_id":"w8","label":"foreign-task","worktree":{"repo_key":"/repo/other","is_linked_worktree":true}}]}}' > "$resp/3.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","label":"renamed-parent","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"checkout_path":"%s","repo_key":"/repo/arena","is_linked_worktree":true}},{"workspace_id":"w7","label":"manual-child","worktree":{"checkout_path":"%s","repo_key":"/repo/arena","is_linked_worktree":true}},{"workspace_id":"w8","label":"foreign-task","worktree":{"repo_key":"/repo/other","is_linked_worktree":true}}]}}\n' "$wt" "$dir/manual" > "$resp/3.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}' > "$resp/4.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
   [ "$out" = $'fmtest:w9:p1\tfm-exact-task-id' ] || fail "native child recovery discovery used label alone or included a foreign repo: $out"
-  pass "fm_backend_herdr_list_live: native recovery uses parent repo plus linked-worktree identity and excludes foreign children"
+  pass "fm_backend_herdr_list_live: native recovery requires durable metadata and verified checkout identity"
 }
 
 # --- target parsing, key normalization ---------------------------------------
@@ -1770,6 +1832,10 @@ test_create_task_creates_with_no_focus_flag
 test_workspace_find_matches_only_this_homes_own_label
 test_workspace_matches_project_uses_durable_identity
 test_open_treehouse_child_uses_existing_path_and_exact_task_id
+test_child_for_task_rejects_existing_exact_id
+test_open_treehouse_child_rejects_already_open
+test_close_treehouse_child_verifies_identity_and_disappearance
+test_close_treehouse_child_refuses_reused_workspace_id
 test_kill_child_closes_workspace_presentation
 test_runtime_evidence_stays_inside_child_workspace
 test_list_live_scoped_to_this_homes_workspace_only
