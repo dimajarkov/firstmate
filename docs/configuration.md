@@ -41,7 +41,9 @@ A zellij spawn additionally version-gates against the installed `zellij` binary'
 A cmux spawn additionally version-gates against the installed `cmux` binary's version, requires `jq`, and requires the control socket to be reachable and accessible (see [`docs/cmux-backend.md`](cmux-backend.md) "Setup" for the one-time socket-access configuration this needs; Automation mode is the recommended socket control mode, with Password mode supported via `config/cmux-socket-password`), refusing loudly and non-retryably on a `cmuxOnly`/unauthenticated socket.
 A backend spawn refusal from a missing dependency, version gate, or unauthenticated socket is terminal for that selected backend; firstmate surfaces it as a blocker instead of silently retrying another backend.
 Task meta records `backend=` only for a non-default backend; an absent `backend=` means `tmux`, preserving existing default-path meta files.
-A herdr task additionally records `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`.
+A Herdr task additionally records `herdr_session=`, `herdr_layout=`, `herdr_parent_workspace_id=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`.
+Native child tasks also record `herdr_child_workspace_id=` and `treehouse_path=`, plus any created `herdr_runtime_tab_id=`, `herdr_logs_tab_id=`, and `herdr_proof_tab_id=` evidence tabs.
+A single-project secondmate parent records `herdr_parent_project=` when its workspace is associated with that project clone.
 A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
 An Orca task additionally records `orca_worktree_id=` and `terminal=`, with `window=fm-<id>` kept as the shared firstmate alias.
 A cmux task additionally records `cmux_workspace_id=` and `cmux_surface_id=`.
@@ -52,8 +54,10 @@ A metadata-routed selector returns the recorded backend target (`terminal=` for 
 Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
 These five sentences are the single owner of the task-selector vocabulary; backend guides and other documents point here instead of restating the resolution order.
 `fm-teardown.sh <id>` takes a task id directly and uses the same recorded backend target fields after loading `state/<id>.meta`.
-Herdr workspaces are derived from `FM_HOME`: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.
-Spawn, list-live, and recovery paths read that label from the active home, so a secondmate's own crewmates stay inside that secondmate home's herdr space.
+Herdr parent workspaces are derived from `FM_HOME`: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.
+An eligible task from a single-project secondmate uses an exact-task-id child workspace opened from its Treehouse-owned path when the parent workspace is associated with that project clone.
+Primary tasks, secondmate agents, legacy parents, and project-less or multi-project homes keep `fm-<id>` task tabs inside the parent workspace.
+Recovery trusts durable native-child metadata only when its session, parent, child, repository, and canonical checkout identities match live Herdr state; legacy tabs retain label-based discovery.
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
 Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.
 For normal zellij operations, `FM_ZELLIJ_SESSION` selects the named session and defaults to `firstmate`.
@@ -312,6 +316,7 @@ FM_BACKEND_HERDR_IDLE_RE='^Type a message\.\.\.$'  # herdr-only: empty-composer 
 FM_BACKEND_HERDR_BARE_PROMPT_RE='^[❯›]'  # herdr-only: verified agent glyphs recognized as an UNBORDERED (bare) composer row, e.g. claude's ❯ or codex's ›; shell glyphs remain unknown rather than empty, and de-emphasised ghost/placeholder text (dim or dark-truecolor) after an agent prompt reads empty via the shared fm_composer_strip_ghost (docs/herdr-backend.md "Incident (2026-07-08)", "Incident (2026-07-10)")
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Native agent-state submit confirmation")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline
+FM_RUNTIME_METADATA_STALE_SECONDS=86400 # age after which a valid task .arena/worktree-runtime.json snapshot is reported stale; observation only, never a service-health claim
 FM_BACKEND_ORCA_COMPOSER_LINES=200  # orca-only: terminal-read lines scanned to locate the composer row for submit verification
 FM_BACKEND_ORCA_IDLE_RE='^Type a message\.\.\.$'  # orca-only: empty-composer placeholder regex after border/prompt stripping
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)

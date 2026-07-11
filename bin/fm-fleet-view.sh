@@ -3,7 +3,8 @@
 #
 # This command intentionally does not parse fleet state itself.
 # It shells out to fm-fleet-snapshot.sh --json and renders that stable
-# structured contract for humans.
+# structured contract for humans, including each task's normalized runtime
+# metadata status and optional slug.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

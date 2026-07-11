@@ -9,8 +9,8 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 | `fm-session-start.sh`    | Compose lock, bootstrap, and wake drain into the single ordered session-start digest |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
-| `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
-| `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
+| `fm-fleet-snapshot.sh`   | Print the read-only fleet, presentation, and runtime snapshot JSON (`fm-fleet-snapshot.v1`) |
+| `fm-fleet-view.sh`       | Render the fleet snapshot and runtime status as a human Markdown view                |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and secondmate homes from origin          |
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
 | `fm-brief.sh`            | Scaffold ship, scout, secondmate-charter, and Herdr-lab briefs                       |
@@ -59,7 +59,7 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 | `fm-pr-check.sh`         | Record `pr=` and `pr_head=` for a PR-ready task, then arm the watcher's merge poll   |
 | `fm-pr-merge.sh`         | Record PR metadata, then merge a task's PR from its full GitHub URL                  |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task                               |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require scout reports, retire secondmate homes |
+| `fm-teardown.sh`         | Fail-closed teardown: close native Herdr presentations, return landed worktrees, require scout reports, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared X-mode config, relay, and reply-threading helpers                             |

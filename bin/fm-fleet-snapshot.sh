@@ -22,6 +22,12 @@
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
+#     presentation carries normalized Herdr parent/child/tab/pane/project ids;
+#     non-Herdr layouts are null and legacy Herdr meta defaults to legacy-tab.
+#     runtime is a read-only projection of optional
+#     <worktree>/.arena/worktree-runtime.json. It validates schema and canonical
+#     worktree identity, reports absent|invalid|stale|valid, and never claims
+#     that any project service is healthy.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   secondmate_guidance: return-channel action note for renderers and bearings.
 #
@@ -48,6 +54,7 @@ usage: fm-fleet-snapshot.sh --json
 
 Print a read-only structured snapshot of the firstmate fleet.
 JSON is the stable machine-readable output contract.
+Runtime metadata is observed only; no status is a service-health claim.
 EOF
 }
 

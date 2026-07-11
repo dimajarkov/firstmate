@@ -241,7 +241,7 @@ Reconcile reality with your records before doing anything else, working from the
    Treat those status tails as wake-event history; when you need a live current-state read for a recorded direct report, use `bin/fm-crew-state.sh <id>` instead of inferring from the last status line.
    If older wake-event history matters, read the individual full status log named in the digest instead of bulk-reading every status file.
 4. Use the `window=` values from the digest's `state/*.meta` entries as the live direct-report set, and read the digest's per-task `endpoint: alive|dead` line for each - that cheap check is already done; do not re-probe it yourself.
-   Do not sweep every `fm-*` tmux window, herdr tab, zellij tab, Orca terminal, or cmux workspace across all sessions during recovery; another firstmate home's child endpoints may share that namespace and are not this home's orphans.
+   Do not sweep every `fm-*` tmux window, Herdr tab or child workspace, zellij tab, Orca terminal, or cmux workspace across all sessions during recovery; another firstmate home's child endpoints may share that namespace and are not this home's orphans.
 5. If the digest reports a recorded direct-report's endpoint as `dead` (or a meta has no `window=`), reconcile it through its meta as described below.
 6. For meta with no window, or an endpoint the digest reported dead, reconcile by kind.
    For ordinary crewmates, check the recorded backend metadata first; use `treehouse status` for treehouse-backed tasks, and the recorded `orca_worktree_id=`/`terminal=` for Orca tasks.

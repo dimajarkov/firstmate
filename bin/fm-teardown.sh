@@ -31,6 +31,10 @@
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
+# Native Herdr child tasks first verify and close the recorded child workspace
+# presentation, confirm it is gone, and only then return the Treehouse-owned
+# worktree. Any presentation identity or close failure stops teardown before
+# Treehouse return; compatibility Herdr tabs keep the pane-close path.
 # Secondmates (kind=secondmate in meta) are retired explicitly. Normal
 # teardown refuses while their home has in-flight crewmate meta files; --force
 # is the approved discard path that prevalidates child removal targets, discards

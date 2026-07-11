@@ -40,7 +40,7 @@ This is.. a directory that turns any agent into your firstmate, and you the capt
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.
-- **A visible crew** - every crewmate works in its own tmux window, experimental herdr/zellij tab, cmux workspace, or Orca terminal you can watch or type into; the first mate reconciles.
+- **A visible crew** - every crewmate works in its own tmux window, experimental Herdr child workspace or compatibility tab, zellij tab, cmux workspace, or Orca terminal you can watch or type into; the first mate reconciles.
 - **Disposable worktrees** - each task runs in a clean [treehouse](https://github.com/kunchenguid/treehouse) git worktree, or an Orca-managed worktree when `backend=orca`, so parallel work on one repo never collides.
 - **Two task shapes** - ship tasks deliver a change; scout tasks investigate, plan, reproduce, or audit and leave a report.
 - **Explicit project modes** - each project ships via `no-mistakes`, `direct-PR`, or `local-only`, with an optional `+yolo` autonomy flag.
@@ -136,7 +136,7 @@ Setup guides for tmux (the default) and every other supported backend (herdr, ze
     │ backend sends / status files │
     ▼              ▼               ▼
  ┌────────┐   ┌────────┐      ┌────────┐
- │fm-task1│   │fm-task2│  ... │fm-taskN│   tmux windows, herdr/zellij tabs, cmux workspaces, or Orca terminals
+ │fm-task1│   │fm-task2│  ... │fm-taskN│   tmux windows, Herdr workspaces/tabs, zellij tabs, cmux workspaces, or Orca terminals
  │crewmate│   │crewmate│      │crewmate│   one autonomous agent each
  └───┬────┘   └───┬────┘      └───┬────┘
      ▼            ▼               ▼
