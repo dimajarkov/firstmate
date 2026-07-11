@@ -356,8 +356,9 @@ fm_backend_herdr_child_for_task() {  # <session> <parent-workspace-id> <task-id>
     | .workspace_id' 2>/dev/null | head -1
 }
 
-fm_backend_herdr_clear_task_husks() {  # <session> <parent-workspace-id> <task-id>
-  local session=$1 parent=$2 task_id=$3 list parent_repo children child panes pane state remaining
+fm_backend_herdr_clear_task_husks() {  # <session> <parent-workspace-id> <task-id> [recorded-child-id] [recorded-treehouse-path]
+  local session=$1 parent=$2 task_id=$3 recorded_child=${4:-} recorded_path=${5:-}
+  local list parent_repo children child child_entry declared expected actual panes pane state remaining
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
     echo "error: could not inspect native Herdr children for task '$task_id'" >&2
     return 1
@@ -375,8 +376,34 @@ fm_backend_herdr_clear_task_husks() {  # <session> <parent-workspace-id> <task-i
         and .worktree.repo_key == $repo)
     | .workspace_id' 2>/dev/null) || return 1
   [ -n "$children" ] || return 0
+  if [ -z "$recorded_child" ] || [ -z "$recorded_path" ]; then
+    echo "error: native Herdr child for task '$task_id' exists without durable child workspace and Treehouse path metadata" >&2
+    return 1
+  fi
+  expected=$(cd "$recorded_path" 2>/dev/null && pwd -P) || {
+    echo "error: recorded Treehouse path $recorded_path for task '$task_id' cannot be resolved" >&2
+    return 1
+  }
   while IFS= read -r child; do
     [ -n "$child" ] || continue
+    if [ "$child" != "$recorded_child" ]; then
+      echo "error: native Herdr child $child for task '$task_id' does not match recorded workspace $recorded_child" >&2
+      return 1
+    fi
+    child_entry=$(printf '%s' "$list" | jq -c --arg id "$child" '.result.workspaces[]? | select(.workspace_id == $id)' 2>/dev/null | head -1)
+    if ! printf '%s' "$child_entry" | jq -e '(.worktree.checkout_path | type) == "string"' >/dev/null 2>&1; then
+      echo "error: native Herdr child $child for task '$task_id' has no verifiable checkout path" >&2
+      return 1
+    fi
+    declared=$(printf '%s' "$child_entry" | jq -r '.worktree.checkout_path')
+    actual=$(cd "$declared" 2>/dev/null && pwd -P) || {
+      echo "error: native Herdr child $child checkout path $declared cannot be resolved" >&2
+      return 1
+    }
+    if [ "$actual" != "$expected" ]; then
+      echo "error: native Herdr child $child checkout $actual does not match recorded Treehouse path $expected" >&2
+      return 1
+    fi
     panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$child" 2>/dev/null) || {
       echo "error: could not inspect panes in native Herdr child $child for task '$task_id'" >&2
       return 1

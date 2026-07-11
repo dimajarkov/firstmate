@@ -768,6 +768,8 @@ case "$BACKEND" in
     HERDR_RUNTIME_TAB_ID=
     HERDR_LOGS_TAB_ID=
     HERDR_PROOF_TAB_ID=
+    HERDR_RECOVERY_CHILD_WORKSPACE_ID=
+    HERDR_RECOVERY_TREEHOUSE_PATH=
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
       HERDR_PARENT_PROJECTS=$(secondmate_registry_value "$ID" projects || true)
@@ -797,7 +799,16 @@ case "$BACKEND" in
     HERDR_PARENT_WORKSPACE_ID=$HERDR_WORKSPACE_ID
     if [ "$KIND" != secondmate ] && [ -f "$FM_HOME/$SUB_HOME_MARKER" ] \
       && fm_backend_herdr_workspace_matches_project "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$PROJ_ABS"; then
-      if ! fm_backend_herdr_clear_task_husks "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$ID"; then
+      if [ -f "$STATE/$ID.meta" ] \
+        && [ "$(grep '^backend=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)" = herdr ] \
+        && [ "$(grep '^herdr_layout=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)" = child-workspace ] \
+        && [ "$(grep '^herdr_session=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)" = "$HERDR_SES" ] \
+        && [ "$(grep '^herdr_parent_workspace_id=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)" = "$HERDR_PARENT_WORKSPACE_ID" ]; then
+        HERDR_RECOVERY_CHILD_WORKSPACE_ID=$(grep '^herdr_child_workspace_id=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)
+        HERDR_RECOVERY_TREEHOUSE_PATH=$(grep '^treehouse_path=' "$STATE/$ID.meta" | tail -1 | cut -d= -f2- || true)
+      fi
+      if ! fm_backend_herdr_clear_task_husks "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" "$ID" \
+        "$HERDR_RECOVERY_CHILD_WORKSPACE_ID" "$HERDR_RECOVERY_TREEHOUSE_PATH"; then
         exit 1
       fi
       WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || exit 1
@@ -819,7 +830,7 @@ $HERDR_TASK_IDS
 EOF
       HERDR_WORKSPACE_ID=$HERDR_CHILD_WORKSPACE_ID
       HERDR_ABORT_CHILD_WORKSPACE=$HERDR_CHILD_WORKSPACE_ID
-      HERDR_LAYOUT=child-workspace
+      HERDR_LAYOUT='child-workspace'
       HERDR_EVIDENCE_TABS=$(fm_backend_herdr_surface_runtime_evidence "$HERDR_SES" "$HERDR_CHILD_WORKSPACE_ID" "$WT")
       HERDR_RUNTIME_TAB_ID=${HERDR_EVIDENCE_TABS%%$'\t'*}
       HERDR_EVIDENCE_REST=${HERDR_EVIDENCE_TABS#*$'\t'}

@@ -674,9 +674,10 @@ test_child_for_task_rejects_existing_exact_id() {
 }
 
 test_clear_task_husks_closes_confirmed_no_agent_child() {
-  local dir log resp fb status=0
+  local dir log resp fb path status=0
   dir="$TMP_ROOT/clear-child-husk"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1"}}}' > "$resp/3.out"
   printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$resp/4.out"
@@ -684,22 +685,23 @@ test_clear_task_husks_closes_confirmed_no_agent_child() {
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}}]}}' > "$resp/6.out"
   fb=$(make_herdr_fakebin "$dir")
   PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" || status=$?
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id w9 "$1"' "$ROOT" "$path" || status=$?
   expect_code 0 "$status" "confirmed no-agent child husk should be closed for recovery"
   assert_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "confirmed no-agent child husk was not closed"
   pass "fm_backend_herdr_clear_task_husks: closes a confirmed no-agent child for same-id recovery"
 }
 
 test_clear_task_husks_refuses_live_child() {
-  local dir log resp fb out status=0
+  local dir log resp fb path out status=0
   dir="$TMP_ROOT/refuse-live-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1"}}}' > "$resp/3.out"
   printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" 2>&1) || status=$?
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
   [ "$status" -ne 0 ] || fail "live native child must block same-id recovery"
   assert_contains "$out" "live workspace w9" "live child refusal did not identify the workspace"
   assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "live child must never be closed"
@@ -707,18 +709,47 @@ test_clear_task_husks_refuses_live_child() {
 }
 
 test_clear_task_husks_refuses_unknown_child() {
-  local dir log resp fb out status=0
+  local dir log resp fb path out status=0
   dir="$TMP_ROOT/refuse-unknown-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","is_linked_worktree":true}}]}}' > "$resp/1.out"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1"}]}}' > "$resp/2.out"
   printf '%s\n' '{"error":{"code":"internal_error"}}' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id' "$ROOT" 2>&1) || status=$?
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
   [ "$status" -ne 0 ] || fail "unknown native child state must block same-id recovery"
   assert_contains "$out" "unknown agent state" "unknown child refusal was not explicit"
   assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "unknown child must never be closed"
   pass "fm_backend_herdr_clear_task_husks: refuses an unknown exact-task child"
+}
+
+test_clear_task_husks_refuses_workspace_id_collision() {
+  local dir log resp fb path out status=0
+  dir="$TMP_ROOT/refuse-child-id-collision"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  path="$dir/treehouse-worktree"; mkdir -p "$path"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w10","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$path" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id w9 "$1"' "$ROOT" "$path" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "same-label child with an unrecorded workspace id must block husk recovery"
+  assert_contains "$out" "does not match recorded workspace w9" "workspace-id collision refusal was not explicit"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw10' "workspace-id collision must never be closed"
+  pass "fm_backend_herdr_clear_task_husks: requires the durable child workspace id before closing"
+}
+
+test_clear_task_husks_refuses_checkout_path_collision() {
+  local dir log resp fb recorded actual out status=0
+  dir="$TMP_ROOT/refuse-child-path-collision"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  recorded="$dir/recorded-worktree"; actual="$dir/other-worktree"; mkdir -p "$recorded" "$actual"
+  printf '{"result":{"workspaces":[{"workspace_id":"w2","worktree":{"repo_key":"/repo/arena","is_linked_worktree":false}},{"workspace_id":"w9","label":"exact-task-id","worktree":{"repo_key":"/repo/arena","checkout_path":"%s","is_linked_worktree":true}}]}}\n' "$actual" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_clear_task_husks fmtest w2 exact-task-id w9 "$1"' "$ROOT" "$recorded" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "same-id child at an unrecorded checkout path must block husk recovery"
+  assert_contains "$out" "does not match recorded Treehouse path" "checkout-path collision refusal was not explicit"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose\x1fw9' "checkout-path collision must never be closed"
+  pass "fm_backend_herdr_clear_task_husks: requires the durable Treehouse path before closing"
 }
 
 test_open_treehouse_child_rejects_already_open() {
@@ -1985,6 +2016,8 @@ test_child_for_task_rejects_existing_exact_id
 test_clear_task_husks_closes_confirmed_no_agent_child
 test_clear_task_husks_refuses_live_child
 test_clear_task_husks_refuses_unknown_child
+test_clear_task_husks_refuses_workspace_id_collision
+test_clear_task_husks_refuses_checkout_path_collision
 test_open_treehouse_child_rejects_already_open
 test_open_treehouse_child_cleans_up_invalid_created_child
 test_open_treehouse_child_does_not_close_unverified_returned_id
