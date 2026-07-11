@@ -166,7 +166,7 @@ fleet_sync() {
       wait "$pid" 2>/dev/null || true
       [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
       fleet_sync_relay_all_output "$tmp"
-      echo "FLEET_SYNC: fleet: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${elapsed}s)"
+      echo "FLEET_SYNC: fleet: skipped: bootstrap refresh timed out (timeout=${timeout}s elapsed=${timeout}s)"
       rm -f "$tmp"
       return 0
     fi

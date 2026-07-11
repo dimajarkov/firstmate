@@ -67,13 +67,32 @@ wait_numeric_file() {
 # Portable mtime in epoch seconds. Platform-detected, never the `stat -f || stat -c`
 # fallback (which writes a partial filesystem dump on Linux; see fm-watch.sh).
 file_mtime() {
-  if [ "$(uname)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
+  local value
+  value=$(stat -f %m "$1" 2>/dev/null) || value=
+  case "$value" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$value" ;;
+  esac
 }
 
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does not
 # fire on a pre-existing status (mirrors fm-watch.sh's stat_sig exactly).
 seen_sig() {
-  if [ "$(uname)" = Darwin ]; then stat -f '%z:%Fm' "$1" 2>/dev/null; else stat -c '%s:%Y' "$1" 2>/dev/null; fi
+  local value
+  value=$(stat -f '%z:%Fm' "$1" 2>/dev/null) || value=
+  case "$value" in
+    ''|*[!0-9:]*) stat -c '%s:%Y' "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+backdate_file() { # <path> <epoch>
+  local path=$1 epoch=$2 stamp
+  stamp=$(date -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null) || stamp=
+  case "$stamp" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9]) touch -mt "$stamp" "$path" ;;
+    *) touch -m -d "@$epoch" "$path" ;;
+  esac
 }
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
@@ -561,8 +580,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   # status file, re-prime .seen-* to the new signature so the signal scan stays
   # quiet, and confirm it re-surfaces as a paused recheck - never a wedge.
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  backdate_file "$statusf" "$back"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
   : > "$out"
   printf 'idle, holding for upstream (token 2)' > "$capture_file"
@@ -590,8 +608,7 @@ test_secondmate_paused_resurfaces_in_normal_mode() {
   printf 'window=%s\nkind=secondmate\n' "$window" > "$state/secondmate-held.meta"
   printf 'paused: awaiting the upstream release\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  backdate_file "$statusf" "$back"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-secondmate-held_status"
   key=$(printf '%s' "$window" | tr '.:/' '___')
   pane_hash=$(hash_text "idle awaiting external")
@@ -1064,8 +1081,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   statusf="$state/afk-held.status"
   printf 'paused: awaiting the upstream tool release\n' > "$statusf"
   back=$(( $(date +%s) - 500 ))
-  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
-  else touch -m -d "@$back" "$statusf"; fi
+  backdate_file "$statusf" "$back"
   sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-afk-held_status"
   date '+%s' > "$state/.afk"
   key=$(printf '%s' "$window" | tr '.:/' '___')

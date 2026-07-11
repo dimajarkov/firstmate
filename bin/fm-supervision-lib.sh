@@ -11,11 +11,12 @@
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
-    stat -c %Y "$1" 2>/dev/null
-  fi
+  local m
+  m=$(stat -f %m "$1" 2>/dev/null) || m=
+  case "$m" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$m" ;;
+  esac
 }
 
 # fm_supervision_status <state-dir> [grace-seconds]

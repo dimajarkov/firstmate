@@ -37,11 +37,12 @@ fm_pid_identity() {
 }
 
 fm_path_mtime() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
-    stat -c %Y "$1" 2>/dev/null
-  fi
+  local m
+  m=$(stat -f %m "$1" 2>/dev/null) || m=
+  case "$m" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$m" ;;
+  esac
 }
 
 fm_path_age() {

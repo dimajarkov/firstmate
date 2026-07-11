@@ -99,14 +99,24 @@ fm_pid_identity "$WATCHER_PID" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
 # "Blocks: ...") to stdout before failing, so the fallback's correct output gets
 # appended to that garbage. Arithmetic under `set -u` then aborts on the stray
 # token (e.g. the word "File" read as an unset variable), which silently kills the
-# watcher mid-cycle. Detect the platform once and pick the right form.
-if [ "$(uname)" = Darwin ]; then
-  stat_mtime() { stat -f %m "$1" 2>/dev/null; }        # epoch seconds of mtime
-  stat_sig()   { stat -f '%z:%Fm' "$1" 2>/dev/null; }   # size:mtime signature
-else
-  stat_mtime() { stat -c %Y "$1" 2>/dev/null; }
-  stat_sig()   { stat -c '%s:%Y' "$1" 2>/dev/null; }
-fi
+# watcher mid-cycle. Validate the output because GNU coreutils may shadow BSD
+# stat on macOS while uname still reports Darwin.
+stat_mtime() {
+  local value
+  value=$(stat -f %m "$1" 2>/dev/null) || value=
+  case "$value" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+stat_sig() {
+  local value
+  value=$(stat -f '%z:%Fm' "$1" 2>/dev/null) || value=
+  case "$value" in
+    ''|*[!0-9:]*) stat -c '%s:%Y' "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
 
 POLL=${FM_POLL:-15}                   # seconds between cycles
 HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans

@@ -23,11 +23,12 @@ fm_lock_log() {
 # Portable mtime in epoch seconds. Kept self-contained so this leaf lib drags in
 # no wake-queue machinery when a caller only needs the staleness proof.
 fm_lock_path_mtime() {
-  if [ "$(uname)" = Darwin ]; then
-    stat -f %m "$1" 2>/dev/null
-  else
-    stat -c %Y "$1" 2>/dev/null
-  fi
+  local m
+  m=$(stat -f %m "$1" 2>/dev/null) || m=
+  case "$m" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$m" ;;
+  esac
 }
 
 # fm_lock_lsof_holder <target>: 0 a process holds it, 1 provably none, 2 lsof

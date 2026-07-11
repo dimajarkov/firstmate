@@ -65,7 +65,7 @@ cleanup_all() {
   rm -rf "${STATE_DIR:-}" 2>/dev/null || true
 }
 trap cleanup_all EXIT
-fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+herdr_prepare_isolated "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # --- source the daemon (for afk_enter/afk_exit/FM_INJECT_MARK) + the backend -
 # shellcheck source=bin/fm-supervise-daemon.sh

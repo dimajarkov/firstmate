@@ -218,12 +218,15 @@ AFK_FLAG_NAME=".afk"
 # classifiers can take an explicit state arg without depending on globals.
 _state_root() { printf '%s' "${FM_STATE_OVERRIDE:-$FM_HOME/state}"; }
 
-# --- portable stat (same trap as fm-watch.sh: no `stat -f || stat -c`) -------
-if [ "$(uname)" = Darwin ]; then
-  _stat_file_mtime() { stat -f %m "$1" 2>/dev/null; }
-else
-  _stat_file_mtime() { stat -c %Y "$1" 2>/dev/null; }
-fi
+# --- portable stat (validate output when GNU stat shadows BSD stat) ----------
+_stat_file_mtime() {
+  local value
+  value=$(stat -f %m "$1" 2>/dev/null) || value=
+  case "$value" in
+    ''|*[!0-9]*) stat -c %Y "$1" 2>/dev/null ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
 _now() { date +%s; }
 _file_age() {  # seconds since mtime; very large if missing
   local f=$1 m
