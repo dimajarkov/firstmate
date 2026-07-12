@@ -5,7 +5,6 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-pi-session-context)
 EXT="$ROOT/.pi/extensions/fm-primary-session-context.ts"
 
 run_fixture() {
@@ -15,6 +14,8 @@ import { pathToFileURL } from "node:url";
 
 const handlers = new Map();
 const calls = [];
+let active = 0;
+let maxActive = 0;
 const outputs = {
   "tasks-axi": { stdout: "bin: ~/.npm-global/bin/tasks-axi\ndescription: task manager\nin_flight: 0 tasks\u0000", stderr: "", code: 0, killed: false },
   "gh-axi": { stdout: "bin: ~/.npm-global/bin/gh-axi\ndescription: GitHub wrapper\nrepo: owner/name", stderr: "", code: 0, killed: false },
@@ -25,6 +26,13 @@ const pi = {
   on(name, handler) { handlers.set(name, handler); },
   async exec(command, args, options) {
     calls.push({ command, args, options });
+    if (process.env.SCENARIO === "concurrent") {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      const delay = { "tasks-axi": 40, "gh-axi": 30, "lavish-axi": 20, "chrome-devtools-axi": 10 }[command];
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      active -= 1;
+    }
     if (process.env.SCENARIO === "fail" && command === "gh-axi") throw new Error("missing binary");
     if (process.env.SCENARIO === "timeout" && command === "lavish-axi") return { stdout: "", stderr: "", code: null, killed: true };
     if (process.env.SCENARIO === "truncate" && command === "tasks-axi") return { stdout: "x\n".repeat(300), stderr: "", code: 0, killed: false };
@@ -59,6 +67,12 @@ if (!first.message.content.includes("quota-axi") || !first.message.content.inclu
 if (process.env.SCENARIO === "fail" && !first.message.content.includes("Unavailable: missing binary")) throw new Error("missing binary was not isolated");
 if (process.env.SCENARIO === "timeout" && !first.message.content.includes("timed out after 10000ms")) throw new Error("timeout was not isolated");
 if (process.env.SCENARIO === "truncate" && !first.message.content.includes("Startup guidance truncated by Firstmate")) throw new Error("truncation marker missing");
+if (process.env.SCENARIO === "concurrent") {
+  if (maxActive !== 4) throw new Error(`expected four concurrent probes, observed ${maxActive}`);
+  const headings = ["### tasks-axi", "### gh-axi", "### lavish-axi", "### chrome-devtools-axi"];
+  const positions = headings.map((heading) => first.message.content.indexOf(heading));
+  if (positions.some((position) => position < 0) || positions.some((position, index) => index > 0 && position < positions[index - 1])) throw new Error("concurrent results rendered out of order");
+}
 
 await handlers.get("session_shutdown")({ reason: "new" }, ctx);
 await handlers.get("session_start")({ reason: "new" }, { sessionManager: { getBranch: () => [] } });
@@ -72,5 +86,6 @@ run_fixture normal || fail "Pi session context normal lifecycle failed"
 run_fixture fail || fail "Pi session context missing-binary isolation failed"
 run_fixture timeout || fail "Pi session context timeout isolation failed"
 run_fixture truncate || fail "Pi session context truncation failed"
+run_fixture concurrent || fail "Pi session context concurrency or deterministic ordering failed"
 run_fixture existing || fail "Pi session context reload deduplication failed"
-pass "Pi session context is ordered, bounded, isolated, and once per session"
+pass "Pi session context is concurrent, ordered, bounded, isolated, and once per session"

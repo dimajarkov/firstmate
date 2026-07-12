@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Opt-in interactive Pi primary regression on a private tmux socket and isolated homes.
+# FM_PI_AUTH_FILE and FM_PI_SETTINGS_FILE may link existing read-only Pi configuration into the isolated agent directory.
 set -u
 
 if [ "${FM_PI_LIVE_E2E:-0}" != 1 ]; then
@@ -45,7 +46,7 @@ wait_for_text() {
 wait_for_exact_line() {
   local expected=$1 attempts=${2:-120} i=0
   while [ "$i" -lt "$attempts" ]; do
-    if capture | grep -Fxq " $expected"; then
+    if capture | grep -Fxq "$expected" || capture | grep -Fxq " $expected"; then
       return 0
     fi
     sleep 0.5
@@ -107,6 +108,14 @@ cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$PROJECT/.pi/extensions/fm-pri
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$PROJECT/.pi/extensions/fm-primary-turnend-guard.ts"
 cp "$ROOT/bin/fm-supervision-instructions.sh" "$PROJECT/bin/fm-supervision-instructions.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" "$PI_DIR"
+if [ -n "${FM_PI_AUTH_FILE:-}" ]; then
+  [ -f "$FM_PI_AUTH_FILE" ] || fail "FM_PI_AUTH_FILE does not name a readable file"
+  ln -s "$FM_PI_AUTH_FILE" "$PI_DIR/auth.json"
+fi
+if [ -n "${FM_PI_SETTINGS_FILE:-}" ]; then
+  [ -f "$FM_PI_SETTINGS_FILE" ] || fail "FM_PI_SETTINGS_FILE does not name a readable file"
+  ln -s "$FM_PI_SETTINGS_FILE" "$PI_DIR/settings.json"
+fi
 
 "$TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -c "$PROJECT" \
   "env PI_CODING_AGENT_DIR='$PI_DIR' FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 PI_OFFLINE=1 bash -lc 'printf \"%s\\n\" \"\$\$\" > \"\$FM_HOME/state/.lock\"; pi; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"

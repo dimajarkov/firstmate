@@ -5,6 +5,10 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The plugin fixtures set their own effective homes and roots.
+# Do not let a supervising Firstmate session's overrides redirect them back to the primary checkout.
+unset FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_CONFIG_OVERRIDE
+
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 
@@ -69,7 +73,7 @@ test_spawn_template_mentions_pi_watch_placeholder() {
   assert_contains "$text" "__PIWATCH__" "fm-spawn does not replace the Pi watch extension placeholder"
   assert_contains "$text" "\$PROJ_ABS/.pi/extensions/fm-primary-session-context.ts" "fm-spawn does not point the Pi session-context placeholder at the tracked extension"
   assert_contains "$text" "__PICONTEXT__" "fm-spawn does not replace the Pi session-context extension placeholder"
-  pass "Pi secondmate launch wiring includes both tracked primary extensions"
+  pass "Pi secondmate launch wiring includes all tracked primary extensions"
 }
 
 test_pi_extension_reports_external_healthy_watcher() {

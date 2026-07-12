@@ -4,7 +4,8 @@
 
 Firstmate owns Pi startup-context parity in `.pi/extensions/fm-primary-session-context.ts`.
 Pi loads this project extension only after project trust, or through an explicit `-e` path used for secondmate launches.
-The extension runs supported CLI context producers in deterministic order with a 10-second timeout per command, bounded output, control-character cleanup, and per-command failure isolation.
+The extension starts all supported CLI context producers concurrently and renders their results in deterministic contract order with a 10-second timeout per command, bounded output, control-character cleanup, and per-command failure isolation.
+Concurrent collection reduces the four-command timeout ceiling from approximately 40 seconds to approximately 10 seconds without allowing one producer to reorder or block another producer's result.
 It injects one hidden persistent model-context message per Pi session and does not reinject that message on `/reload`.
 Session replacement creates a new extension instance and receives a fresh context message after the previous instance handles `session_shutdown`.
 The context is guidance for Pi's built-in `bash` tool and does not register the CLIs as first-class Pi tools or MCP servers.
@@ -40,8 +41,15 @@ The pre-change isolated Pi probe used `PI_CODING_AGENT_DIR`, `FM_HOME`, `PI_OFFL
 The probe observed all four dynamic Codex hook payload signatures absent from the Pi model prompt while normal project context was present.
 The post-change probe observed all four dynamic payload signatures in the model-visible injected context without launching the Codex harness or loading Codex hooks.
 The exact post-change model response was `tasks yes,github yes,lavish yes,chrome yes,quota-role yes,axi-runtime-role yes,treehouse-role yes`.
-`tests/fm-pi-session-context.test.sh` covers ordering, once-per-session injection, timeout and failure isolation, truncation, reload deduplication, session replacement, missing binaries, and current output headings.
+`tests/fm-pi-session-context.test.sh` covers concurrent collection, deterministic ordering, once-per-session injection, timeout and failure isolation, truncation, reload deduplication, session replacement, missing binaries, and current output headings.
 `tests/fm-pi-primary-types.test.sh` covers strict TypeScript compatibility against the installed Pi package when `tsc` is installed.
 The live interface checks were `tasks-axi`, `quota-axi --help`, `lavish-axi`, `chrome-devtools-axi`, `gh-axi`, and `treehouse --help` from the Pi environment.
 The Pi model used its built-in `bash` tool for that combined interface check and returned `INTERFACES_OK` with no stderr.
 The `axi` interface check was its audited root `package.json`, which has no `bin` entry, and `packages/axi-sdk-js`, which owns the shared SessionStart hook implementation.
+The 2026-07-12 concurrency revalidation ran every Pi-specific suite and the isolated live E2E against Pi `0.80.6`.
+The focused context suite reported `ok - Pi session context is concurrent, ordered, bounded, isolated, and once per session`.
+The strict installed-package typecheck reported `ok - Pi primary extensions pass strict no-emit typecheck against Pi 0.80.6` using an already-present TypeScript `5.9.3` binary.
+The repo-owned lint command reported `fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)` using an already-present Nix-store binary.
+The live suite reported `ok - Pi 0.80.6 live E2E rendered the tool, guarded once, woke, re-armed, and cleaned up on exit`.
+The live suite used optional read-only auth and settings links inside its isolated `PI_CODING_AGENT_DIR` and a temporary PATH wrapper around the existing tmux binary with already-cached libraries.
+No package, global configuration, credential file, or external tool repository was installed or modified during revalidation.

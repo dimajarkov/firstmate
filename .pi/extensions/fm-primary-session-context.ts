@@ -75,10 +75,9 @@ export default function (pi: ExtensionAPI) {
     context = "";
     if (injected) return;
 
-    const blocks: string[] = [];
-    for (const command of CONTEXT_COMMANDS) {
-      blocks.push(await commandContext(pi, command));
-    }
+    const blocks = await Promise.all(
+      CONTEXT_COMMANDS.map((command) => commandContext(pi, command)),
+    );
     context = [
       "Firstmate Pi startup context",
       "These are CLI guidance blocks, not Pi tool registrations or MCP servers.",
