@@ -616,6 +616,22 @@ test_create_task_creates_with_no_focus_flag() {
   pass "fm_backend_herdr_create_task: tab create passes --no-focus"
 }
 
+test_create_task_workspace_reuses_seeded_root_ids() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/create-task-workspace"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"fm-alpha-a1"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" HERDR_SESSION=fmtest FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task_workspace fm-alpha-a1 /treehouse/alpha-a1' "$ROOT")
+  [ "$out" = "fmtest w9 w9:t1 w9:p1" ] || fail "task-workspace create should return session/workspace/seeded-tab/root-pane ids, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/treehouse/alpha-a1'$'\x1f''--label'$'\x1f''fm-alpha-a1'$'\x1f''--no-focus' \
+    "task-workspace create did not bind the workspace to the exact worktree cwd with --no-focus"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create' \
+    "task-workspace create must reuse the workspace's seeded root tab instead of creating another tab"
+  pass "fm_backend_herdr_create_task_workspace: creates fm-<id> workspace at exact worktree cwd and reuses seeded root tab/pane"
+}
+
 # --- workspace_find: scoped to THIS home's own label, not just any match ----
 
 test_workspace_find_matches_only_this_homes_own_label() {
@@ -655,6 +671,33 @@ test_list_live_scoped_to_this_homes_workspace_only() {
   assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w1' \
     "list_live must never query the primary's (or a sibling secondmate's) workspace"
   pass "fm_backend_herdr_list_live: scoped to this home's own workspace, never a sibling home's"
+}
+
+test_list_live_uses_recorded_task_workspace_identity() {
+  local dir log resp fb out home state
+  dir="$TMP_ROOT/list-live-task-workspace"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$dir/home"; state="$home/state"; mkdir -p "$state"
+  cat > "$state/alpha-a1.meta" <<'EOF'
+window=fmtest:w9:p1
+backend=herdr
+herdr_session=fmtest
+herdr_workspace_id=w9
+herdr_tab_id=w9:t1
+herdr_pane_id=w9:p1
+herdr_layout=task-workspace
+EOF
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"fm-alpha-a1"},{"workspace_id":"w8","label":"fm-sibling-s2"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT")
+  [ "$out" = $'fmtest:w9:p1\tfm-alpha-a1' ] || fail "list_live should report the exact recorded task workspace/pane only, got '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w9' \
+    "list_live did not verify the recorded workspace id"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w8' \
+    "list_live must not inspect a sibling task workspace not recorded in this home's metadata"
+  pass "fm_backend_herdr_list_live: resolves task workspaces through this home's recorded workspace/pane identity"
 }
 
 # --- target parsing, key normalization ---------------------------------------
@@ -750,6 +793,24 @@ test_kill_is_best_effort() {
   expect_code 0 $? "kill must be best-effort (never fail even when the pane close call itself fails)"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w1:p2' "kill did not call pane close on the right pane"
   pass "fm_backend_herdr_kill: calls pane close and stays best-effort on failure"
+}
+
+test_kill_task_workspace_verifies_and_closes_only_recorded_workspace() {
+  local dir log resp fb
+  dir="$TMP_ROOT/kill-task-workspace"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"fm-alpha-a1"},{"workspace_id":"w8","label":"fm-sibling-s2"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_kill fmtest:w9:p1 "" fm-alpha-a1 w9 task-workspace' "$ROOT"
+  expect_code 0 $? "task-workspace kill should succeed after exact identity verification"
+  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close'$'\x1f''w9' \
+    "task-workspace kill did not close the exact recorded workspace"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close'$'\x1f''w8' \
+    "task-workspace kill must never close a sibling workspace"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
+    "new task-workspace teardown should close the workspace, not use the legacy pane-close path"
+  pass "fm_backend_herdr_kill: verified task-workspace teardown closes only the recorded fm-<id> workspace"
 }
 
 test_current_path_reads_cwd() {
@@ -2001,8 +2062,10 @@ test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
+test_create_task_workspace_reuses_seeded_root_ids
 test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
+test_list_live_uses_recorded_task_workspace_identity
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read
@@ -2010,6 +2073,7 @@ test_capture_works_around_small_lines_bug
 test_capture_preserves_pane_read_failure
 test_send_key_normalizes_and_targets_pane
 test_kill_is_best_effort
+test_kill_task_workspace_verifies_and_closes_only_recorded_workspace
 test_current_path_reads_cwd
 test_busy_state_working_maps_to_busy
 test_busy_state_done_and_blocked_map_to_idle

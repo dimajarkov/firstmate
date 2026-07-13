@@ -12,7 +12,13 @@ FAKE_LOG="$TMP_ROOT/herdr.log"
 TRIPWIRES="$TMP_ROOT/tripwires"
 REAL_SLEEP=$(command -v sleep)
 mkdir -p "$FAKE_STATE"
-printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+cat > "$FAKE_STATE/fleet.json" <<'JSON'
+[
+  {"default":true,"name":"default","running":false,"session_dir":"/Users/test/.config/herdr/sessions/default","socket_path":"/Users/test/.config/herdr/herdr.sock"},
+  {"default":false,"name":"scratch","running":true,"session_dir":"/Users/test/.config/herdr/sessions/scratch","socket_path":"/Users/test/.config/herdr/scratch.sock"},
+  {"default":false,"name":"arena","running":true,"session_dir":"/Users/test/.config/herdr/sessions/arena","socket_path":"/Users/test/.config/herdr/arena.sock"}
+]
+JSON
 : > "$FAKE_LOG"
 
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -27,19 +33,19 @@ for arg in "$@"; do
 done
 [ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
 session=$last
-default_socket=$(cat "$state/default-socket")
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
   "session list")
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
+      jq -c '{sessions:.}' "$state/fleet.json"
     else
       running=false
       [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+      jq -c --arg name "$session" --argjson running "$running" \
+        '{sessions:(. + [{default:false,name:$name,running:$running,session_dir:("/tmp/" + $name),socket_path:("/tmp/" + $name + ".sock")}])}' \
+        "$state/fleet.json"
     fi
     ;;
   "server --session")
@@ -165,17 +171,59 @@ test_missing_tripwire_blocks_destruction() {
   pass "fm-herdr-lab: missing tripwire refuses teardown before any Herdr call"
 }
 
-test_changed_default_trips_after_teardown() {
+test_named_running_fleet_and_stopped_default_are_protected() {
+  local name="fm-lab-named-fleet-$$" expected actual
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_prepare "$name" || fail "stopped-default named-fleet prepare failed"
+  expected='[{"name":"arena","default":false,"running":true,"session_dir":"/Users/test/.config/herdr/sessions/arena","socket_path":"/Users/test/.config/herdr/arena.sock"},{"name":"default","default":true,"running":false,"session_dir":"/Users/test/.config/herdr/sessions/default","socket_path":"/Users/test/.config/herdr/herdr.sock"},{"name":"scratch","default":false,"running":true,"session_dir":"/Users/test/.config/herdr/sessions/scratch","socket_path":"/Users/test/.config/herdr/scratch.sock"}]'
+  actual=$(cat "$TRIPWIRES/$name.fleet-state.json")
+  [ "$actual" = "$expected" ] || fail "tripwire did not canonically capture stopped default plus named running sessions: $actual"
+  printf '%s\n' deleted > "$FAKE_STATE/$name"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "prepared fixture teardown failed"
+  pass "fm-herdr-lab: stopped default and every pre-existing named running session are protected"
+}
+
+test_changed_preexisting_session_trips_teardown() {
   local name="fm-lab-tripwire-change-$$" status=0
   : > "$FAKE_LOG"
   run_with_fake fm_herdr_lab_provision "$name" || fail "tripwire fixture provision failed"
-  printf '%s\n' '/changed/default.sock' > "$FAKE_STATE/default-socket"
+  jq 'map(if .name == "scratch" then .running = false else . end)' \
+    "$FAKE_STATE/fleet.json" > "$FAKE_STATE/fleet.json.next"
+  mv "$FAKE_STATE/fleet.json.next" "$FAKE_STATE/fleet.json"
   run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
-  expect_code 1 "$status" "changed default fleet state must fail teardown"
+  expect_code 1 "$status" "changed named fleet state must fail teardown"
   assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire should retain evidence"
-  printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+  jq 'map(if .name == "scratch" then .running = true else . end)' \
+    "$FAKE_STATE/fleet.json" > "$FAKE_STATE/fleet.json.next"
+  mv "$FAKE_STATE/fleet.json.next" "$FAKE_STATE/fleet.json"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "cleanup after restored named fleet failed"
+  pass "fm-herdr-lab: changed pre-existing named-session state is a hard failure"
+}
+
+test_added_session_trips_teardown() {
+  local name="fm-lab-tripwire-add-$$" status=0
+  run_with_fake fm_herdr_lab_provision "$name" || fail "added-session fixture provision failed"
+  jq '. + [{default:false,name:"intruder",running:true,session_dir:"/tmp/intruder",socket_path:"/tmp/intruder.sock"}]' \
+    "$FAKE_STATE/fleet.json" > "$FAKE_STATE/fleet.json.next"
+  mv "$FAKE_STATE/fleet.json.next" "$FAKE_STATE/fleet.json"
+  run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "added pre-existing fleet member must fail teardown"
+  jq 'map(select(.name != "intruder"))' "$FAKE_STATE/fleet.json" > "$FAKE_STATE/fleet.json.next"
+  mv "$FAKE_STATE/fleet.json.next" "$FAKE_STATE/fleet.json"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "cleanup after removed added session failed"
+  pass "fm-herdr-lab: additions to the protected session fleet are a hard failure"
+}
+
+test_malformed_session_inventory_fails_closed() {
+  local name="fm-lab-malformed-$$" status=0
+  cp "$FAKE_STATE/fleet.json" "$FAKE_STATE/fleet.json.saved"
+  printf '%s\n' '[{"default":true,"name":"default","running":"unknown"}]' > "$FAKE_STATE/fleet.json"
+  run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "malformed session state must fail preparation"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "malformed inventory left an ambiguous tripwire"
+  mv "$FAKE_STATE/fleet.json.saved" "$FAKE_STATE/fleet.json"
   rm -f "$TRIPWIRES/$name.fleet-state.json"
-  pass "fm-herdr-lab: changed default fleet state is a hard failure"
+  pass "fm-herdr-lab: malformed session inventory fails closed"
 }
 
 test_stopped_owned_lab_can_reprovision() {
@@ -234,7 +282,10 @@ SH
 test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
-test_changed_default_trips_after_teardown
+test_named_running_fleet_and_stopped_default_are_protected
+test_changed_preexisting_session_trips_teardown
+test_added_session_trips_teardown
+test_malformed_session_inventory_fails_closed
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch
