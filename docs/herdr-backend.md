@@ -798,7 +798,8 @@ There is no second watcher process: the reader is a short-lived subprocess of th
 
 **Polling is the permanent fail-closed backstop.**
 The watcher's poll loop runs every cycle regardless, so the event path only ever shortens latency and can never drop an escalation.
-Three documented triggers fall back to pure polling (`fm_backend_herdr_events_capable` and the watcher's runtime-disable counter): a build below protocol 16 or missing the events surface in `herdr api schema`; a connect/subscribe failure; and repeated runtime failures, which disable the fast path for the rest of that watcher process (a restart re-probes).
+Three documented triggers fall back to pure polling (`fm_backend_herdr_events_capable` and the watcher's runtime-disable counter): a build below protocol 16 or a schema missing either required capability marker (`events.subscribe` or `pane.agent_status_changed`); a connect/subscribe failure; and repeated runtime failures, which disable the fast path for the rest of that watcher process (a restart re-probes).
+The capability probe captures the roughly 220 KB schema exactly once and checks both markers in that value, avoiding an early-closing pipeline that can SIGPIPE its producer under `pipefail` and falsely disable the push path.
 
 **Empirical evidence (2026-07-11, herdr 0.7.3, protocol 16, macOS aarch64 Darwin 25.5.0, python3 3.13, jq present).**
 Capability, verified read-only:
@@ -826,7 +827,7 @@ ok - real herdr: the watcher fast-path enqueues a stale wake naming the task win
 ```
 
 The subscriber returned the `blocked` transition in **0.129s** and the watcher fast-path enqueued a durable `stale` wake naming the task window - versus up to `FM_POLL` (15s) plus `FM_STALE_ESCALATE_SECS` (240s) on the poll path this shortcuts.
-Dedupe (one wake per `->blocked` edge, marker cleared when the pane returns to `working`), subscribe-then-reconcile ordering (an already-blocked pane enqueued exactly once while newer edges buffer in the active stream), the `kind=secondmate`/`paused:` exemptions, and the three fail-closed fallbacks are covered by the fake-CLI unit tests in `tests/fm-backend-herdr.test.sh` (the `wait_transition`/`apply_transition` cases), `tests/fm-transition-lib.test.sh`, and `tests/fm-supervision-events.test.sh`.
+Dedupe (one wake per `->blocked` edge, marker cleared when the pane returns to `working`), subscribe-then-reconcile ordering (an already-blocked pane enqueued exactly once while newer edges buffer in the active stream), the `kind=secondmate`/`paused:` exemptions, the three fail-closed fallbacks, and the large-schema capability gate under `pipefail` (both markers present, either marker absent, and exactly one schema read) are covered by the fake-CLI unit tests in `tests/fm-backend-herdr.test.sh` (the `events_capable`, `wait_transition`, and `apply_transition` cases), `tests/fm-transition-lib.test.sh`, and `tests/fm-supervision-events.test.sh`.
 
 ## Away-mode daemon terminal launch (2026-07-12, herdr 0.7.3, protocol 16, macOS aarch64)
 

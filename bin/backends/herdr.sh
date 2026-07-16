@@ -67,8 +67,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
-# 0.7.3). Below this, or with the events surface absent from `herdr api schema`,
-# the event fast-path fails closed to the watcher's poll loop
+# 0.7.3). Below this, or with either required capability marker absent from
+# `herdr api schema`, the event fast-path fails closed to the watcher's poll loop
 # (fm_backend_herdr_events_capable). Distinct from FM_BACKEND_HERDR_MIN_PROTOCOL
 # (14): the adapter's spawn/capture/send primitives work on 14, only the push
 # subscriber needs 16.
@@ -1225,8 +1225,10 @@ fm_backend_herdr_socket_path() {  # <session>
 # and both `events.subscribe` and `pane.agent_status_changed` present in `herdr
 # api schema`. FM_BACKEND_HERDR_EVENTS_FORCE overrides the whole verdict for
 # tests (1 = capable, 0 = incapable) without touching the real binary. The
-# `api schema` read is ~220KB, so callers (the watcher) memoize this per session
-# for a process lifetime rather than probing every poll.
+# ~220KB `api schema` is captured exactly once and both markers are matched in
+# that value, avoiding an early-closing pipeline that can SIGPIPE its producer
+# under `pipefail`. Callers (the watcher) memoize this per session for a process
+# lifetime rather than probing every poll.
 fm_backend_herdr_events_capable() {  # <session>
   local session=$1 protocol schema
   case "${FM_BACKEND_HERDR_EVENTS_FORCE:-}" in
