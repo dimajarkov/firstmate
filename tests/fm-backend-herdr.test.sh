@@ -1740,6 +1740,68 @@ test_no_jq_reserved_keyword_arg_names() {
 # that drives a live idle->blocked transition lives in
 # tests/fm-backend-herdr-eventwait-smoke.test.sh.
 
+write_large_events_schema() {  # <path> <method-marker> <event-marker>
+  local path=$1 method=$2 event=$3
+  {
+    # Keep each capability marker on an early complete line like herdr's
+    # pretty-printed schema, with roughly 256KB still unwritten after grep -q
+    # can exit and close the pipe.
+    printf '{\n"methods":["%s"],\n"events":["%s"],\n"padding":"' "$method" "$event"
+    awk 'BEGIN { for (i = 0; i < 262144; i++) printf "x" }'
+    printf '"}\n'
+  } > "$path"
+}
+
+test_events_capable_accepts_large_schema_under_pipefail() {
+  local dir log resp fb err status schema_calls
+  dir="$TMP_ROOT/events-capable-large"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; err="$dir/stderr"; : > "$log"
+  printf '{"client":{"version":"0.7.3","protocol":16}}\n' > "$resp/1.out"
+  write_large_events_schema "$resp/2.out" "events.subscribe" "pane.agent_status_changed"
+  fb=$(make_herdr_fakebin "$dir")
+
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
+    FM_BACKEND_HERDR_EVENT_READER=true \
+    /bin/bash -o pipefail -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_events_capable sess' "$ROOT" 2>"$err"
+  status=$?
+
+  expect_code 0 "$status" "events_capable should accept both markers in a large schema under pipefail"
+  [ ! -s "$err" ] || fail "events_capable wrote stderr while scanning a large capable schema: $(cat "$err")"
+  schema_calls=$(grep -c $'\x1f''api'$'\x1f''schema'$'\x1f''--json' "$log")
+  [ "$schema_calls" = 1 ] || fail "events_capable should load the schema exactly once, got $schema_calls calls"
+  pass "fm_backend_herdr_events_capable: a large schema detects both required markers under pipefail without stderr noise"
+}
+
+test_events_capable_large_schema_missing_markers_fails_closed() {
+  local missing dir log resp fb err status schema_calls
+  for missing in events.subscribe pane.agent_status_changed; do
+    dir="$TMP_ROOT/events-capable-missing-${missing%%.*}"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; err="$dir/stderr"; : > "$log"
+    printf '{"client":{"version":"0.7.3","protocol":16}}\n' > "$resp/1.out"
+    case "$missing" in
+      events.subscribe)
+        write_large_events_schema "$resp/2.out" "events.missing" "pane.agent_status_changed"
+        ;;
+      pane.agent_status_changed)
+        write_large_events_schema "$resp/2.out" "events.subscribe" "pane.agent_status_missing"
+        ;;
+    esac
+    fb=$(make_herdr_fakebin "$dir")
+
+    status=0
+    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
+      FM_BACKEND_HERDR_EVENT_READER=true \
+      /bin/bash -o pipefail -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_events_capable sess' "$ROOT" 2>"$err" \
+      || status=$?
+
+    [ "$status" -ne 0 ] || fail "events_capable should fail closed when $missing is absent"
+    [ ! -s "$err" ] || fail "events_capable wrote stderr while rejecting a schema missing $missing: $(cat "$err")"
+    schema_calls=$(grep -c $'\x1f''api'$'\x1f''schema'$'\x1f''--json' "$log")
+    [ "$schema_calls" = 1 ] || fail "events_capable should load a schema missing $missing exactly once, got $schema_calls calls"
+  done
+  pass "fm_backend_herdr_events_capable: each missing schema marker fails closed after one large-schema load"
+}
+
 # make_herdr_eventfake: a herdr stub answering exactly the calls the event path
 # makes - `session list --json` (echoes one session, name FM_FAKE_SESSION_NAME,
 # socket FM_FAKE_SOCKET), `status --json`, and `agent get <pane>` (per-pane
@@ -2125,6 +2187,8 @@ test_dispatch_routes_herdr_backend
 test_dispatch_busy_state_unknown_for_tmux
 test_dispatch_composer_state_routes_by_backend
 test_scripts_route_explicit_target_through_meta_backend
+test_events_capable_accepts_large_schema_under_pipefail
+test_events_capable_large_schema_missing_markers_fails_closed
 test_normalize_event_leaves_from_empty
 test_escalation_marker_keys_like_watcher
 test_apply_transition_blocked_requires_commit_to_dedupe
