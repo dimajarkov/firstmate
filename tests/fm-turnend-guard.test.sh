@@ -507,6 +507,34 @@ test_hook_silent_in_crewmate_worktree() {
   pass "fm-turnend-guard: inert in a crewmate/scout task worktree (linked git worktree) even when unhealthy"
 }
 
+# A tracked hook runs the guard from the checkout that supplied the hook.
+# An inherited FM_ROOT_OVERRIDE must not redirect that child script back to the
+# supervising primary and make the child consume the primary fleet state.
+test_hook_silent_in_crewmate_worktree_with_inherited_primary_root() {
+  local base dir out status
+  base="$TMP_ROOT/hook-crew-inherited-base"
+  dir="$TMP_ROOT/hook-crew-inherited-wt"
+  make_crewmate_worktree_dir "$base" "$dir" >/dev/null
+  mkdir -p "$base/state"
+  : > "$base/state/task1.meta"
+  out=$(printf '{"stop_hook_active":false}' \
+    | FM_ROOT_OVERRIDE="$base" FM_HOME="$base" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  expect_code 0 "$status" "an inherited primary root must not redirect a crewmate hook into the primary"
+  [ -z "$out" ] || fail "inherited primary root made a crewmate hook emit the primary warning: $out"
+  pass "fm-turnend-guard: inherited primary root cannot redirect a linked task hook into the primary"
+}
+
+test_hook_blocks_in_primary_with_matching_root_override() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-primary-matching-root")
+  : > "$dir/state/task1.meta"
+  out=$(printf '{"stop_hook_active":false}' \
+    | FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  expect_code 2 "$status" "a matching primary root override must keep the real primary guarded"
+  assert_contains "$out" "TURN WOULD END BLIND" "matching primary root override lost the guard warning"
+  pass "fm-turnend-guard: matching primary root override still protects the actual primary checkout"
+}
+
 test_hook_silent_without_jq() {
   local dir out status fakebin tool tool_path
   dir=$(make_primary_dir "$TMP_ROOT/hook-nojq")
@@ -683,6 +711,25 @@ EOF
   assert_contains "$out" "guard=$expected_root/bin/fm-turnend-guard.sh" "codex hook must keep using the outer firstmate guard"
   assert_not_contains "$out" "nested guard executed" "codex hook must not execute nested project code"
   pass ".codex/hooks.json: Stop hook ignores nested git root guard scripts"
+}
+
+test_codex_hook_is_inert_in_task_worktree_with_inherited_primary_root() {
+  local settings command base dir payload out status
+  settings="$ROOT/.codex/hooks.json"
+  command=$(jq -r '.hooks.Stop[0].hooks[0].command // empty' "$settings")
+  [ -n "$command" ] || fail "Stop hook command is missing from .codex/hooks.json"
+  base="$TMP_ROOT/codex-inherited-primary-base"
+  dir="$TMP_ROOT/codex-inherited-primary-wt"
+  make_crewmate_worktree_dir "$base" "$dir" >/dev/null
+  mark_codex_hook_root "$dir"
+  mkdir -p "$base/state"
+  : > "$base/state/task1.meta"
+  payload=$(jq -cn --arg cwd "$dir" '{cwd:$cwd,stop_hook_active:false}')
+  out=$(printf '%s' "$payload" \
+    | (cd "$dir" && FM_ROOT_OVERRIDE="$base" FM_HOME="$base" bash -c "$command") 2>&1); status=$?
+  expect_code 0 "$status" "tracked Codex Stop hook must stay inert in a task worktree with inherited primary overrides"
+  [ -z "$out" ] || fail "tracked Codex Stop hook emitted the primary warning from a task worktree: $out"
+  pass ".codex/hooks.json: Stop hook cannot redirect a task worktree into an inherited primary root"
 }
 
 test_opencode_plugin_forces_followup() {
@@ -926,6 +973,8 @@ test_hook_blocks_in_treehouse_leased_secondmate_home
 test_hook_exempts_linked_worktree_with_stray_marker
 test_hook_exempts_linked_worktree_with_non_ascii_marker
 test_hook_silent_in_crewmate_worktree
+test_hook_silent_in_crewmate_worktree_with_inherited_primary_root
+test_hook_blocks_in_primary_with_matching_root_override
 test_hook_silent_without_jq
 test_hook_silent_without_stdin
 test_hook_runs_fast
@@ -935,6 +984,7 @@ test_settings_hook_uses_claude_project_dir
 test_codex_hook_invokes_shared_guard
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
+test_codex_hook_is_inert_in_task_worktree_with_inherited_primary_root
 test_opencode_plugin_forces_followup
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_forces_followup

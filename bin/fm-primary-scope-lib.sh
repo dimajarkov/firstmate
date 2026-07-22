@@ -18,10 +18,15 @@ fm_root_is_secondmate_home() {
 }
 
 # Return 0 when $1 is a genuine primary root whose effective state dir is $2.
+# When $3 is supplied, it is the checkout that owns the executing hook script,
+# and it must resolve to the same physical root as $1.
 # A valid secondmate marker force-includes a linked secondmate home.
 # Otherwise only a plain checkout is primary, never a linked task worktree.
 fm_primary_scope_matches() {
-  local root=$1 state=$2 git_dir git_common_dir
+  local root=$1 state=$2 actual_root=${3:-$1} git_dir git_common_dir
+  root=$(CDPATH='' cd -- "$root" 2>/dev/null && pwd -P) || return 1
+  actual_root=$(CDPATH='' cd -- "$actual_root" 2>/dev/null && pwd -P) || return 1
+  [ "$root" = "$actual_root" ] || return 1
   if ! fm_root_is_secondmate_home "$root"; then
     git_dir=$(git -C "$root" rev-parse --git-dir 2>/dev/null) || return 1
     git_common_dir=$(git -C "$root" rev-parse --git-common-dir 2>/dev/null) || return 1
