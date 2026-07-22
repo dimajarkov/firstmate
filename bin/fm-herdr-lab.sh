@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Provision and operate an isolated Herdr lab session without risking the live
-# default session.
+# Provision and operate an isolated Herdr lab session without risking any
+# pre-existing Herdr session.
 #
 # Usage:
 #   fm-herdr-lab.sh name <label>
@@ -21,8 +21,10 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Session-list reads retry transient client failures across four 200ms delays.
+# Provision records every pre-existing session except the owned lab session as
+# a fleet-state tripwire. Stop and teardown require that canonical record to be
+# identical before destructive calls and after cleanup.
 set -u
 
 fm_herdr_lab_error() {
@@ -55,7 +57,16 @@ fm_herdr_lab_raw() { # <session> <herdr arguments...>
 }
 
 fm_herdr_lab_session_list() { # <session>
-  fm_herdr_lab_raw "$1" session list --json
+  local name=$1 attempt=0 output
+  while [ "$attempt" -lt 5 ]; do
+    if output=$(fm_herdr_lab_raw "$name" session list --json); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 5 ] && sleep 0.2
+  done
+  return 1
 }
 
 fm_herdr_lab_fleet_state() { # <session>
@@ -64,15 +75,26 @@ fm_herdr_lab_fleet_state() { # <session>
     fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
     return 1
   }
-  snapshot=$(printf '%s' "$sessions" | jq -c '
-    [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
-      then .[0] | {name, default, running, socket_path}
-      else empty
-      end
+  snapshot=$(printf '%s' "$sessions" | jq -cSe --arg owned "$name" '
+    if (.sessions | type) != "array" then error("sessions is not an array") else .sessions end
+    | if all(.[];
+        type == "object"
+        and has("name") and (.name | type) == "string" and (.name | length) > 0
+        and has("default") and (.default | type) == "boolean"
+        and has("running") and (.running | type) == "boolean"
+        and has("session_dir") and ((.session_dir | type) == "string" or (.session_dir | type) == "null")
+        and has("socket_path") and ((.socket_path | type) == "string" or (.socket_path | type) == "null")
+      ) then . else error("invalid session identity or state") end
+    | if ([.[].name] | length) == ([.[].name] | unique | length)
+      then . else error("duplicate session name") end
+    | if ([.[] | select(.default == true)] | length) == 1
+        and ([.[] | select(.default == true)][0].name == "default")
+      then . else error("ambiguous default session") end
+    | [ .[] | select(.name != $owned) ]
+    | sort_by(.name)
   ' 2>/dev/null)
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "cannot build an unambiguous pre-existing-session fleet-state tripwire"
     return 1
   }
   printf '%s\n' "$snapshot"
@@ -227,7 +249,7 @@ fm_herdr_lab_check_tripwire() { # <session>
   before=$(cat "$tripwire")
   after=$(fm_herdr_lab_fleet_state "$name") || return 1
   [ "$before" = "$after" ] || {
-    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: default session changed during lab work"
+    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: pre-existing Herdr session fleet changed during lab work"
     fm_herdr_lab_error "before: $before"
     fm_herdr_lab_error "after:  $after"
     return 1
@@ -249,6 +271,7 @@ fm_herdr_lab_stop() { # <session>
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing stop"
     return 1
   }
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_refuse_if_default "$name" || return 1
   fm_herdr_lab_raw "$name" session stop "$name" --json
 }
@@ -271,6 +294,7 @@ fm_herdr_lab_teardown() { # <session>
   fi
   fm_herdr_lab_stop "$name" >/dev/null 2>&1 || true
   sleep 0.5
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_refuse_if_default "$name" || return 1
   fm_herdr_lab_raw "$name" session delete "$name" --json >/dev/null 2>&1 || delete_status=$?
   sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {

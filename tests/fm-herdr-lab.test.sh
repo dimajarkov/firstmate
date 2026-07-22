@@ -13,6 +13,9 @@ TRIPWIRES="$TMP_ROOT/tripwires"
 REAL_SLEEP=$(command -v sleep)
 mkdir -p "$FAKE_STATE"
 printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+printf '%s\n' true > "$FAKE_STATE/default-running"
+printf '%s\n' true > "$FAKE_STATE/arena-running"
+printf '%s\n' false > "$FAKE_STATE/scratch-running"
 : > "$FAKE_LOG"
 
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -28,19 +31,40 @@ done
 [ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
 session=$last
 default_socket=$(cat "$state/default-socket")
+default_running=$(cat "$state/default-running")
+arena_running=$(cat "$state/arena-running")
+scratch_running=$(cat "$state/scratch-running")
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
   "session list")
-    if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
-    else
-      running=false
-      [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+    failures=0
+    [ ! -f "$state/list-failures" ] || failures=$(cat "$state/list-failures")
+    if [ "$failures" -gt 0 ]; then
+      printf '%s\n' "$((failures - 1))" > "$state/list-failures"
+      exit 94
     fi
+    present=true
+    running=false
+    if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
+      present=false
+    elif [ "$lab_state" = running ]; then
+      running=true
+    fi
+    jq -nc \
+      --arg default_socket "$default_socket" \
+      --arg name "$session" \
+      --argjson default_running "$default_running" \
+      --argjson arena_running "$arena_running" \
+      --argjson scratch_running "$scratch_running" \
+      --argjson present "$present" \
+      --argjson running "$running" \
+      '{sessions:([
+        {default:true,name:"default",running:$default_running,session_dir:"/Users/test/.config/herdr",socket_path:$default_socket},
+        {default:false,name:"arena",running:$arena_running,session_dir:"/Users/test/.config/herdr/sessions/arena",socket_path:"/Users/test/.config/herdr/sessions/arena/herdr.sock"},
+        {default:false,name:"scratch",running:$scratch_running,session_dir:"/Users/test/.config/herdr/sessions/scratch",socket_path:"/Users/test/.config/herdr/sessions/scratch/herdr.sock"}
+      ] + if $present then [{default:false,name:$name,running:$running,session_dir:("/tmp/" + $name),socket_path:("/tmp/" + $name + ".sock")}] else [] end)}'
     ;;
   "server --session")
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
@@ -49,7 +73,12 @@ case "$1 ${2:-}" in
     printf '%s\n' running > "$state/$session"
     ;;
   "status --json")
-    if [ "$lab_state" = running ]; then
+    failures=0
+    [ ! -f "$state/status-failures" ] || failures=$(cat "$state/status-failures")
+    if [ "$failures" -gt 0 ]; then
+      printf '%s\n' "$((failures - 1))" > "$state/status-failures"
+      printf '%s\n' '{"server":{"running":false}}'
+    elif [ "$lab_state" = running ]; then
       printf '%s\n' '{"server":{"running":true}}'
     else
       printf '%s\n' '{"server":{"running":false}}'
@@ -181,6 +210,65 @@ test_changed_default_trips_after_teardown() {
   pass "fm-herdr-lab: changed default fleet state is a hard failure"
 }
 
+test_transient_preprovision_list_failure_retries() {
+  local name="fm-lab-list-retry-$$" refused_name="fm-lab-list-refuse-$$" status=0 server_calls
+  : > "$FAKE_LOG"
+  printf '%s\n' 1 > "$FAKE_STATE/list-failures"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "one transient pre-provision list failure was not retried"
+  [ "$(grep -c "^session list --json --session $name$" "$FAKE_LOG")" -ge 2 ] \
+    || fail "pre-provision inventory did not retry its transient list failure"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after list retry failed"
+
+  : > "$FAKE_LOG"
+  printf '%s\n' 5 > "$FAKE_STATE/list-failures"
+  run_with_fake fm_herdr_lab_provision "$refused_name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "an exhausted pre-provision list retry must fail closed"
+  server_calls=$(grep -c "^server --session $refused_name$" "$FAKE_LOG" || true)
+  [ "$server_calls" -eq 0 ] || fail "exhausted list retries reached server provisioning"
+  assert_absent "$TRIPWIRES/$refused_name.fleet-state.json" \
+    "exhausted list retries created an ownership tripwire"
+  rm -f "$FAKE_STATE/list-failures"
+  pass "fm-herdr-lab: transient pre-provision session-list failures retry and exhaustion fails closed"
+}
+
+test_stopped_default_and_named_sessions_are_protected() {
+  local name="fm-lab-stopped-default-$$" before after
+  printf '%s\n' false > "$FAKE_STATE/default-running"
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "stopped default prevented named lab provisioning"
+  before=$(cat "$TRIPWIRES/$name.fleet-state.json")
+  assert_contains "$before" '"name":"default","running":false' \
+    "tripwire did not retain the stopped default state"
+  assert_contains "$before" '"name":"arena","running":true' \
+    "tripwire did not retain the running arena session"
+  assert_contains "$before" '"name":"scratch","running":false' \
+    "tripwire did not retain the stopped scratch session"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "guarded teardown with a stopped default failed"
+  after=$(run_with_fake fm_herdr_lab_session_list "$name" \
+    | jq -cS --arg name "$name" '[.sessions[] | select(.name != $name)] | sort_by(.name)')
+  [ "$before" = "$after" ] || fail "protected fleet changed around stopped-default lab lifecycle"
+  printf '%s\n' true > "$FAKE_STATE/default-running"
+  pass "fm-herdr-lab: a stopped default and unrelated named sessions remain byte-identical"
+}
+
+test_protected_fleet_change_blocks_owned_destruction() {
+  local name="fm-lab-fleet-change-$$" status=0
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "protected-fleet fixture provision failed"
+  printf '%s\n' false > "$FAKE_STATE/arena-running"
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "changed unrelated session must block owned-session stop"
+  [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "tripwire failure reached owned-session stop"
+  status=0
+  run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "changed unrelated session must block owned-session delete"
+  [ "$(cat "$FAKE_STATE/$name")" = running ] || fail "tripwire failure reached owned-session teardown"
+  assert_present "$TRIPWIRES/$name.fleet-state.json" "tripwire failure discarded ownership evidence"
+  printf '%s\n' true > "$FAKE_STATE/arena-running"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown did not recover after protected fleet restoration"
+  pass "fm-herdr-lab: protected-session drift blocks owned stop and delete"
+}
+
 test_stopped_owned_lab_can_reprovision() {
   local name="fm-lab-reprovision-$$"
   : > "$FAKE_LOG"
@@ -206,6 +294,23 @@ test_failed_delete_retains_tripwire() {
   run_with_fake fm_herdr_lab_teardown "$name" || fail "retry after failed delete did not clean up the lab session"
   assert_absent "$TRIPWIRES/$name.fleet-state.json" "successful retry left the ownership tripwire behind"
   pass "fm-herdr-lab: failed deletion retains ownership until absence is confirmed"
+}
+
+test_readiness_beyond_old_ten_second_boundary() {
+  local name="fm-lab-late-ready-$$" status_calls
+  cat > "$FAKEBIN/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$FAKEBIN/sleep"
+  : > "$FAKE_LOG"
+  printf '%s\n' 55 > "$FAKE_STATE/status-failures"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "provision stopped at the old 50-poll/10-second boundary"
+  status_calls=$(grep -c "^status --json --session $name$" "$FAKE_LOG")
+  [ "$status_calls" -gt 50 ] || fail "late-readiness fixture did not cross the old 10-second poll boundary"
+  rm -f "$FAKEBIN/sleep" "$FAKE_STATE/status-failures"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after late readiness failed"
+  pass "fm-herdr-lab: readiness after the old 10-second boundary succeeds within the 60-second cap"
 }
 
 test_timed_out_provision_cancels_late_launch() {
@@ -238,6 +343,10 @@ test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
 test_changed_default_trips_after_teardown
+test_transient_preprovision_list_failure_retries
+test_stopped_default_and_named_sessions_are_protected
+test_protected_fleet_change_blocks_owned_destruction
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
+test_readiness_beyond_old_ten_second_boundary
 test_timed_out_provision_cancels_late_launch
