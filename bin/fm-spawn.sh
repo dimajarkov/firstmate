@@ -77,6 +77,11 @@
 #   --scout records kind=scout in the task's meta (report deliverable, scratch worktree;
 #   see AGENTS.md task lifecycle); --secondmate records kind=secondmate and launches in a
 #   provisioned firstmate home; the default is kind=ship.
+#   A ship/scout spawned to work on this same Firstmate repository receives an
+#   ephemeral task-private FM_HOME under its recorded tasktmp=. This keeps an
+#   obedient child session-start from resolving the supervising home's lock.
+#   The launch also clears every FM_*_OVERRIDE before setting that task home;
+#   external-project workers retain their historical environment unchanged.
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
@@ -524,6 +529,19 @@ shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
   printf "'"
+}
+
+git_common_dir_abs() {
+  local common
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  cd "$common" && pwd -P
+}
+
+project_is_firstmate_self() {
+  local project_common root_common
+  project_common=$(git_common_dir_abs "$1") || return 1
+  root_common=$(git_common_dir_abs "$FM_ROOT") || return 1
+  [ "$project_common" = "$root_common" ]
 }
 
 model_flag_for_harness() {
@@ -1089,6 +1107,11 @@ fi
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
 TASK_TMP="/tmp/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
+TASK_HOME=
+if [ "$KIND" != secondmate ] && project_is_firstmate_self "$PROJ_ABS"; then
+  TASK_HOME="$TASK_TMP/home"
+  mkdir -p "$TASK_HOME/data" "$TASK_HOME/state" "$TASK_HOME/config" "$TASK_HOME/projects"
+fi
 
 # Per-harness turn-end hook: a file that touches state/<id>.turn-ended when the
 # agent finishes a turn. Worktree-resident hooks are kept out of git's view so
@@ -1220,6 +1243,7 @@ META_WINDOW=$T
   echo "mode=$MODE"
   echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
+  [ -z "$TASK_HOME" ] || echo "taskhome=$TASK_HOME"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   # backend= is written only for a non-default (non-tmux) backend, so the
@@ -1268,6 +1292,9 @@ LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
+  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
+elif [ -n "$TASK_HOME" ]; then
+  sq_home=$(shell_quote "$TASK_HOME")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
 fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child

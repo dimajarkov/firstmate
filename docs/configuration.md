@@ -15,6 +15,9 @@ The tracked code root contains the shared instruction, skill, documentation, wor
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the guarded exceptions in `AGENTS.md`.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
+For a ship or scout working on the same Firstmate repository, `fm-spawn.sh` creates an ephemeral operational home under the task's teardown-owned temp root, records it as `taskhome=`, and launches the child with `FM_HOME` pointed there after clearing inherited operational-directory overrides.
+That task-private home isolates any child session-start lock from the supervising main or secondmate home and disappears with the existing `tasktmp=` cleanup.
+Workers for external projects retain the historical environment because they do not load Firstmate's tracked primary-session hooks and instructions.
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
