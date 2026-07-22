@@ -208,11 +208,11 @@ HERDR_SECTION=$(printf '%s\n' \
 '   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
 '4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
 '5. Forbidden commands: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
-'6. The helper records the live default session before provisioning and verifies the identical fleet state after teardown.' \
-'   A missing, stopped, or changed default session is a hard tripwire failure, never a cleanup warning to ignore.' \
+'6. The helper records every pre-existing session except the owned lab before provisioning and verifies the identical protected fleet before destructive calls and after teardown.' \
+'   A missing or ambiguous default, or any changed protected session, is a hard tripwire failure; an initially stopped default is preserved as stopped.' \
 '' \
 'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
-'The captain fleet uses the running `default` session.')
+'The session named `default` and every unrelated named session are protected fleet state.')
 else
 HERDR_SECTION=$(cat <<'EOF'
 # Herdr lifecycle declaration - NOT ENABLED

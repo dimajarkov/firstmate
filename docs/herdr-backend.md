@@ -580,8 +580,56 @@ The fix, verified against the real binary in an isolated session (both a genuine
 The same guard is now a first-class production helper, `bin/fm-herdr-lab.sh`, not just test scaffolding.
 It provisions an isolated never-`default` lab session (names must start with `fm-lab-`), runs every task command through `run <session> ...` with a mandatory trailing `--session` appended, and refuses caller-supplied `--session`, any leading option before the subcommand, and every server or session-lifecycle subcommand.
 Destructive teardown goes only through `teardown <session>` (or a deliberate mid-run `stop <session>`), each re-running the refuse-default check immediately before every stop and delete.
-It also adds a before/after fleet-state tripwire: `provision` records the live `default` session before creating the lab session, and `teardown` verifies that recorded state is byte-identical afterward before clearing it, treating any missing, stopped, or changed default session as a hard failure rather than a warning.
+It also adds a before/after fleet-state tripwire: `provision` records every pre-existing session except the owned lab before creating it, and `stop` plus `teardown` verify that canonical record before destructive calls and after cleanup.
+The tripwire requires one unambiguous session named `default`, but preserves its observed running or stopped state instead of requiring it to be running.
+It also preserves every unrelated named session's complete inventory object and refuses destructive cleanup if any protected session changes.
 Crewmate briefs for tasks that drive Herdr lifecycle get this exact contract embedded by scaffolding with `bin/fm-brief.sh --herdr-lab`; every crewmate brief scaffolded without the flag instead carries a loud not-enabled gate, because the scaffold cannot detect from the caller-supplied repo string whether the task will touch Herdr lifecycle.
+
+### Guarded lab provisioning and stopped-default evidence (2026-07-22)
+
+The motivating Herdr 0.7.4 failures were a readiness timeout at the former 50-poll/10-second cap and a later transient `cannot list Herdr sessions before provisioning` refusal before the generated session existed.
+The current helper already carries the 300-poll/60-second readiness cap; its focused regression now proves readiness after 55 false polls, beyond the old boundary.
+Session inventory reads now tolerate four 200ms retry delays while still failing closed before provisioning when all five reads fail.
+The same helper owns the stopped-default tripwire conflict, so the repair replaces the default-only/running-only snapshot with the complete protected fleet rather than creating an overlapping lifecycle implementation.
+
+The candidate was first exercised by `tests/fm-herdr-lab.test.sh`, which passed the late-readiness, transient-list, retry-exhaustion, stopped-default, protected-fleet-drift, teardown, and cancellation cases without contacting Herdr.
+Only after that portable suite passed was the installed Herdr exercised with the worktree helper.
+Every live call below used the same generated name and the helper's trailing `--session` scope:
+
+```sh
+HERDR_LAB_HELPER="$PWD/bin/fm-herdr-lab.sh"
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name repair-herdr-lab-provisioning-20260722)
+trap '"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"' EXIT
+FLEET_BEFORE=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" session list --json | jq -cS --arg owned "$HERDR_LAB_SESSION" '[.sessions[] | select(.name != $owned)] | sort_by(.name)')
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" status --json
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" workspace list
+"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
+trap - EXIT
+FLEET_AFTER=$("$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" session list --json | jq -cS --arg owned "$HERDR_LAB_SESSION" '[.sessions[] | select(.name != $owned)] | sort_by(.name)')
+test "$FLEET_BEFORE" = "$FLEET_AFTER"
+```
+
+Exact generated name and readiness output:
+
+```text
+HERDR_LAB_SESSION=fm-lab-repair-herdr-lab-71103-29715
+STATUS={"client":{"version":"0.7.4","channel":"stable","protocol":16,"binary":"/opt/homebrew/bin/herdr","session":"fm-lab-repair-herdr-lab-71103-29715"},"server":{"status":"running","running":true,"version":"0.7.4","protocol":16,"capabilities":{"live_handoff":true,"detached_server_daemon":false},"compatible":true,"socket":"/Users/dmitrijarkov/.config/herdr/sessions/fm-lab-repair-herdr-lab-71103-29715/herdr.sock","session":"fm-lab-repair-herdr-lab-71103-29715","restart_needed":false},"update":{"restart_needed":false}}
+WORKSPACES={"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[]}}
+```
+
+The guarded teardown returned zero.
+The follow-up read used the same generated name and confirmed the owned session and tripwire were both absent.
+The protected inventory before and after was byte-identical:
+
+```text
+FLEET_BEFORE=[{"default":false,"name":"arena","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/arena","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/arena/herdr.sock"},{"default":true,"name":"default","running":false,"session_dir":"/Users/dmitrijarkov/.config/herdr","socket_path":"/Users/dmitrijarkov/.config/herdr/herdr.sock"},{"default":false,"name":"scratch","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/scratch","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/scratch/herdr.sock"}]
+FLEET_AFTER=[{"default":false,"name":"arena","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/arena","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/arena/herdr.sock"},{"default":true,"name":"default","running":false,"session_dir":"/Users/dmitrijarkov/.config/herdr","socket_path":"/Users/dmitrijarkov/.config/herdr/herdr.sock"},{"default":false,"name":"scratch","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/scratch","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/scratch/herdr.sock"}]
+OWNED_SESSION_COUNT=0
+TRIPWIRE=absent
+TEARDOWN=guarded-success
+PROTECTED_FLEET=byte-identical
+```
 
 ## ID stability across a server restart
 
