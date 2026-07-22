@@ -19,6 +19,8 @@ When tasks are in flight and there is no live identity-matched watcher with a fr
 ## Shared Predicate
 
 The guard first calls the shared primary scope to constrain itself to a real primary checkout.
+The scope requires the effective root to resolve to the same physical checkout as the guard script that the harness invoked.
+An inherited `FM_ROOT_OVERRIDE` can therefore select a root only when it names that actual checkout, and it cannot redirect a disposable worktree's tracked hook into the supervising primary.
 A secondmate home runs its own primary firstmate session, so a genuine `.fm-secondmate-home` marker force-includes it whether treehouse leased it as a linked worktree or it is a git-cloned plain checkout.
 The marker must be a regular non-symlink file whose first line, after all whitespace is removed, contains a non-empty identifier made only of letters, digits, dots, underscores, and dashes.
 An unmarked checkout, or one with an invalid marker, falls through to the git-dir check.
@@ -78,6 +80,22 @@ Command run for root-signal probe: `codex exec --ephemeral --json --dangerously-
 Observed output: the first command printed `<scratch>/outside`, the second command printed `<scratch>`, the Stop hook process `pwd -P` printed `<scratch>`, payload `cwd` printed `<scratch>`, and `CODEX_PROJECT_DIR`, `CODEX_WORKSPACE_ROOT`, and `CODEX_CWD` were empty.
 The tracked command therefore treats hook process PWD as the hook-loaded firstmate root and does not let payload `cwd` choose an executable.
 It still passes the original payload to `bin/fm-turnend-guard.sh`, so the shared loop guard reads `stop_hook_active`.
+
+### 2026-07-23: Codex disposable-worktree scoping
+
+Codex `codex-cli 0.145.0` was validated on Darwin 25.5.0 with a scratch clone, one linked task worktree, isolated state, and the tracked `.codex/hooks.json`.
+The initiating trigger was Codex's `Stop` event after a no-tool model response in the linked task worktree.
+The masking condition was an inherited `FM_ROOT_OVERRIDE` and `FM_HOME` that named the scratch primary checkout, because clearing the root override made the same child guard invocation exit 0 with no output.
+The visible symptom was `hook: Stop Blocked`, a second model turn containing the primary supervision warning, and an attempted `bin/fm-watch-checkpoint.sh --seconds 180` inside the disposable worktree.
+History inspection found the original root-override scope in `1b68a69` from PR 249, the tracked Codex hook in `228963d` from PR 339, and the shared scope extraction in `3ebb219` from PR 687.
+The secondmate marker inclusion in `2364817` from PR 505 was disconfirmed as the cause because the failing unmarked child blocked only when its effective root was redirected to the primary.
+The failing command was `FM_ROOT_OVERRIDE=<scratch-primary> FM_HOME=<scratch-primary> codex exec --ephemeral --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --output-last-message last.txt 'Reply with exactly REPRO_DONE. Do not use tools.'` from `<scratch-child>`.
+The first model output was `REPRO_DONE`, then Codex logged `hook: Stop Blocked`, and the forced continuation started the primary foreground checkpoint from `<scratch-child>`.
+That failing run was interrupted after the operator-visible block because the forced continuation selected the normal 180-second checkpoint, so it does not prove the failing path's eventual second Stop.
+The direct predicate counterfactual did not need a model: the child script with the inherited primary root exited 2 and printed `TURN WOULD END BLIND`, while clearing the override made the same invocation exit 0 with empty output.
+After the fix, the same real Codex command from a fresh linked child logged `FIXED_DONE`, `hook: Stop`, and `hook: Stop Completed`, with no forced continuation or tool call.
+Disconfirming evidence used the same fixed scratch primary with a matching root override and `FM_CODEX_WATCH_CHECKPOINT=1`.
+That real primary run logged `PRIMARY_DONE`, `hook: Stop Blocked`, ran the one-second checkpoint, then logged a second `hook: Stop Completed`, proving the fix did not disable the primary backstop.
 
 OpenCode 1.17.6 was validated with project plugins under scratch `.opencode/plugins/`.
 Hook file used: `.opencode/plugins/fm-smoke.js` for throw testing and `.opencode/plugins/fm-primary-turnend-guard.js` for follow-up testing.
@@ -148,6 +166,6 @@ No Herdr command was issued and no fleet state was touched; the experiment wrote
 
 ## Tests
 
-`tests/fm-turnend-guard.test.sh` covers the shared predicate, primary scoping (including a secondmate's own home being guarded like the main primary while its child worktrees stay exempt), `FM_HOME` and `FM_STATE_OVERRIDE` precedence, Pi logical-run latch behavior for no-tool and multi-tool runs, fail-open behavior without `jq`, tracked hook registration for all five harnesses, and the Grok adapter's forced-resume loop guard and permission-mode regression.
+`tests/fm-turnend-guard.test.sh` covers the shared predicate, actual-hook-checkout binding, inherited-root task-worktree regression, primary scoping including a secondmate's own home being guarded like the main primary while its child worktrees stay exempt, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, Pi logical-run latch behavior for no-tool and multi-tool runs, fail-open behavior without `jq`, tracked hook registration for all five harnesses, and the Grok adapter's forced-resume loop guard and permission-mode regression.
 The default behavior suite does not invoke live language-model harnesses.
 `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` opts into the isolated interactive Pi regression recorded above.
