@@ -14,6 +14,12 @@ set -u
 CHECK="$ROOT/bin/fm-arm-pretool-check.sh"
 POLICY="$ROOT/bin/fm-arm-command-policy.mjs"
 
+# The wrapper intentionally classifies absolute config/x-mode.env setup against
+# the active firstmate home.
+# Keep this repository fixture authoritative when the caller itself is running
+# from another FM_HOME, as delegated Firstmate test workers do.
+export FM_HOME="$ROOT"
+
 # --- full cross-harness acceptance matrix ----------------------------------
 
 MATRIX_IDS=()
