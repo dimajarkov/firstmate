@@ -462,21 +462,41 @@ SH
 test_create_task_refuses_duplicate_label() {
   local dir fb out status title
   dir="$TMP_ROOT/dup-task"; mkdir -p "$dir/responses"
-  title=$(cmux_expected_scoped_title fm-dup1)
+  title=dup1
   cmux_workspace_list_response "$dir" 1 "aaaaaaaa-0000-0000-0000-000000000000" "$title"
   fb=$(make_cmux_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
-    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_create_task fm-dup1 /tmp/proj' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_create_task dup1 /tmp/proj' "$ROOT" 2>&1 )
   status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse an existing workspace title (cmux itself does not enforce uniqueness)"
+  [ "$status" -ne 0 ] || fail "create_task should refuse an existing semantic workspace title"
   assert_contains "$out" "already exists" "create_task did not report the duplicate name"
-  pass "fm_backend_cmux_create_task: refuses a duplicate workspace title (cmux's own new-workspace has no uniqueness check)"
+  pass "fm_backend_cmux_create_task: refuses cross-task attachment to a duplicate semantic title"
+}
+
+test_create_task_refuses_simultaneous_duplicate() {
+  local dir fb out status title
+  dir="$TMP_ROOT/dup-task-race"; mkdir -p "$dir/responses"
+  title=raced-task-20260723
+  # Both homes pass the pre-create check, but two same-titled workspaces are
+  # visible when this creator resolves its new identity.
+  printf '{"workspaces":[]}' > "$dir/responses/1.out"
+  cmux_workspace_list_response "$dir" 3 "aaaaaaaa-0000-0000-0000-000000000000" "$title" \
+    "bbbbbbbb-1111-1111-1111-111111111111" "$title"
+  fb=$(make_cmux_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_create_task "$1" /tmp/proj' "$ROOT" "$title" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task should refuse a simultaneous same-title workspace race"
+  assert_contains "$out" "found 2" "create_task did not report the post-create ambiguity"
+  assert_not_contains "$(cat "$dir/log")" $'\x1f''list-panes' \
+    "create_task must not attach to either workspace after a simultaneous title collision"
+  pass "fm_backend_cmux_create_task: simultaneous same-title creation refuses without cross-task attachment"
 }
 
 test_create_task_creates_and_parses_ids() {
   local dir fb out title
   dir="$TMP_ROOT/create-task"; mkdir -p "$dir/responses"
-  title=$(cmux_expected_scoped_title fm-newtask)
+  title=lab-arena-carlos-booking-context-loss-fix-20260723
   # 1: workspace list --json (pre-create duplicate check) -> no match
   printf '{"workspaces":[]}' > "$dir/responses/1.out"
   # 2: new-workspace (silent on success)
@@ -486,14 +506,14 @@ test_create_task_creates_and_parses_ids() {
   cmux_panes_response "$dir" 4 "cccccccc-2222-2222-2222-222222222222"
   fb=$(make_cmux_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
-    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_create_task fm-newtask /tmp/proj' "$ROOT" )
+    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_create_task "$1" /tmp/proj' "$ROOT" "$title" )
   [ "$out" = "bbbbbbbb-1111-1111-1111-111111111111 cccccccc-2222-2222-2222-222222222222" ] \
     || fail "create_task should echo '<workspace_id> <surface_id>', got '$out'"
   assert_contains "$(cat "$dir/log")" $'\x1f''new-workspace'$'\x1f''--name'$'\x1f'"$title"$'\x1f''--cwd'$'\x1f''/tmp/proj' \
-    "create_task did not call new-workspace with the right name/cwd"
+    "create_task did not use the exact semantic task id as its visible name"
   assert_contains "$(cat "$dir/log")" $'\x1f''--focus'$'\x1f''false' \
     "create_task did not pass --focus false"
-  pass "fm_backend_cmux_create_task: creates a workspace and parses workspace_id/surface_id from list responses"
+  pass "fm_backend_cmux_create_task: creates an exact semantic workspace and preserves task-date digits"
 }
 
 # --- target_ready / capture ---------------------------------------------------
@@ -989,6 +1009,29 @@ test_list_live_filters_by_title_prefix() {
   pass "fm_backend_cmux_list_live: lists only this home's scoped task workspaces using plain fm-<id> labels"
 }
 
+test_list_live_binds_semantic_title_to_recorded_ids() {
+  local dir fb out state title workspace surface
+  dir="$TMP_ROOT/list-live-semantic"; state="$dir/state"; mkdir -p "$dir/responses" "$state"
+  title=lab-arena-carlos-booking-context-loss-fix-20260723
+  workspace=aaaaaaaa-0000-0000-0000-000000000000
+  surface=bbbbbbbb-1111-1111-1111-111111111111
+  cat > "$state/task.meta" <<META
+session_name=$title
+cmux_workspace_id=$workspace
+cmux_surface_id=$surface
+META
+  cmux_workspace_list_response "$dir" 1 \
+    "$workspace" "$title" \
+    "cccccccc-2222-2222-2222-222222222222" "unowned-semantic-task-20260723"
+  cmux_panes_response "$dir" 2 "$surface"
+  fb=$(make_cmux_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_STATE_OVERRIDE="$state" FM_CMUX_LOG="$dir/log" FM_CMUX_RESPONSES="$dir/responses" \
+    bash -c '. "$0/bin/backends/cmux.sh"; fm_backend_cmux_list_live' "$ROOT" )
+  [ "$out" = "$workspace:$surface"$'\t'"$title" ] \
+    || fail "list_live did not bind the semantic title to exact current cmux ids: $out"
+  pass "fm_backend_cmux_list_live: semantic titles require exact current workspace and surface identity"
+}
+
 # --- fm-spawn.sh: --secondmate refuses backend=cmux --------------------------
 
 test_secondmate_spawn_refuses_cmux_backend() {
@@ -1032,6 +1075,7 @@ test_ensure_running_returns_immediately_when_already_ok
 test_ensure_running_fails_fast_on_denied_without_launching
 test_ensure_running_fails_fast_on_unauth_without_launching
 test_create_task_refuses_duplicate_label
+test_create_task_refuses_simultaneous_duplicate
 test_create_task_creates_and_parses_ids
 test_target_ready_fails_when_target_absent
 test_target_ready_checks_expected_label
@@ -1060,4 +1104,5 @@ test_kill_adds_sibling_when_last_in_window
 test_kill_is_best_effort_when_close_workspace_fails
 test_kill_recovers_stale_target_by_label
 test_list_live_filters_by_title_prefix
+test_list_live_binds_semantic_title_to_recorded_ids
 test_secondmate_spawn_refuses_cmux_backend

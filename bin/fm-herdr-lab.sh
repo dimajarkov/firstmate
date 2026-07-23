@@ -10,9 +10,9 @@
 #   fm-herdr-lab.sh stop <session>
 #   fm-herdr-lab.sh teardown <session>
 #
-# Session names must begin with "fm-lab-" and can never be "default".
-# The name command sanitizes the label, caps it at 16 characters, and appends
-# process/random suffixes to keep generated socket paths short.
+# Generated session names begin with "lab-" and can never be "default".
+# The name command preserves task-id digits and is deterministic across retries.
+# Legacy fm-lab-* names remain accepted only so in-flight labs can be cleaned.
 # Every Herdr call made here carries a trailing --session <session>.
 # The run command rejects caller-supplied --session flags, any leading option
 # before the subcommand, all session lifecycle operations, and every server
@@ -33,11 +33,12 @@ fm_herdr_lab_error() {
 
 fm_herdr_lab_validate_name() { # <session>
   local name=${1:-}
+  [[ "$name" =~ ^lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] && return 0
   [[ "$name" =~ ^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] && return 0
   case "$name" in
     default) fm_herdr_lab_error "refusing session name 'default'" ;;
     '') fm_herdr_lab_error "refusing an empty session name" ;;
-    *) fm_herdr_lab_error "session name must start with 'fm-lab-' and contain only letters, digits, underscores, or dashes: $name" ;;
+    *) fm_herdr_lab_error "session name must start with 'lab-' (or legacy 'fm-lab-') and contain only letters, digits, underscores, or dashes: $name" ;;
   esac
   return 1
 }
@@ -312,14 +313,36 @@ fm_herdr_lab_teardown() { # <session>
   fm_herdr_lab_verify_tripwire "$name"
 }
 
+fm_herdr_lab_name_digest() { # <label>
+  local hex
+  if command -v shasum >/dev/null 2>&1; then
+    hex=$(printf '%s' "$1" | shasum -a 256 2>/dev/null | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    hex=$(printf '%s' "$1" | sha256sum 2>/dev/null | awk '{print $1}')
+  else
+    fm_herdr_lab_error "cannot shorten a long label without shasum or sha256sum"
+    return 1
+  fi
+  # Map hexadecimal onto letters only. The deterministic disambiguator can
+  # never look like a generated numeric process/nonce suffix.
+  printf '%s' "${hex:0:16}" | tr '0123456789abcdef' 'abcdefghijklmnop'
+}
+
 fm_herdr_lab_name() { # <label>
-  local label=${1:-lab}
+  local label=${1:-lab} digest tail label_len
   label=$(printf '%s' "$label" | tr -cd 'a-zA-Z0-9_-' | sed 's/^[^a-zA-Z0-9]*//; s/-*$//')
   [ -n "$label" ] || label=lab
-  label=${label:0:16}
-  label=${label%-}
-  [ -n "$label" ] || label=lab
-  printf 'fm-lab-%s-%s-%s\n' "$label" "$$" "$RANDOM"
+  # Keep the complete reported 46-character task id while bounding the full
+  # session name to 50 characters for Herdr's fixed per-user socket path.
+  # Longer ids retain both semantic ends (including task-date suffixes) plus a
+  # letter-only 64-bit digest, so shortening stays deterministic and collision-safe.
+  if [ "${#label}" -gt 46 ]; then
+    digest=$(fm_herdr_lab_name_digest "$label") || return 1
+    label_len=${#label}
+    tail=${label:$((label_len - 12)):12}
+    label="${label:0:14}-x-$digest-$tail"
+  fi
+  printf 'lab-%s\n' "$label"
 }
 
 fm_herdr_lab_usage() {

@@ -22,7 +22,8 @@ First run: before spawn mutates any repo or worktree state, firstmate runs `orca
 Spawn fails closed if the runtime is not ready.
 The first spawn against a given project also auto-registers that project's repo in Orca (`orca repo add --path`) if it is not already registered - no manual registration step is needed.
 
-Watching and attaching: Orca owns both the worktree and the terminal for its tasks, so there is nothing to attach to outside the Orca app itself - open the app and find the terminal for the task (recorded as `terminal=<handle>` in the task's meta, with `window=fm-<id>` as the shared firstmate alias).
+Watching and attaching: Orca owns both the worktree and the terminal for its tasks, so there is nothing to attach to outside the Orca app itself.
+Open the app and find the terminal named exactly with the ordinary worker or scout task id; metadata records `session_name=<id>` and the operational `terminal=<handle>`.
 You do not need to open the app for routine supervision: from an active firstmate session, `bin/fm-peek.sh <id>` reads a task's terminal without opening Orca, and `FM_HOME=<this-firstmate-home> bin/fm-send.sh <id> "<text>"` steers it unless `FM_HOME` is already set to the active firstmate home (the stable `fm-<id>` alias also works; Enter and Ctrl-C are supported; Escape is not).
 
 Verify it works by spawning a trivial task with `--backend orca` and confirming the task's meta records `backend=orca`, `terminal=`, `orca_worktree_id=`, and `worktree=`; the Orca app should show a new terminal for the task.
@@ -52,7 +53,8 @@ An Orca-spawned task records the normal task fields plus these Orca-specific fie
 
 ```text
 backend=orca
-window=fm-<id>
+window=<id>
+session_name=<id>
 terminal=<orca terminal handle>
 orca_worktree_id=<orca worktree id>
 worktree=<absolute path to the Orca-created git worktree>
@@ -68,7 +70,7 @@ The recorded `backend=orca` field tells shared call sites to route capture, send
 Spawn:
 
 1. Ensure the project repo is registered in Orca, adding it with `orca repo add --path` when needed.
-2. Create an independent Orca worktree with `orca worktree create --repo id:<repo> --name fm-<id> --no-parent --setup skip`.
+2. Create an independent Orca worktree with `orca worktree create --repo id:<repo> --name <id> --no-parent --setup skip`; any CLI refusal propagates, and firstmate never adopts a worktree by name.
 3. Reuse the terminal returned by Orca worktree creation only when it appears in the verified `result.terminal.handle` shape, or create a titled terminal in that worktree when Orca returns only the worktree.
 4. Install firstmate's per-harness turn-end hooks in the Orca worktree.
 5. Write metadata, then send `GOTMPDIR` export and the selected harness launch through the recorded Orca terminal.
@@ -90,6 +92,28 @@ Teardown:
 - Ship teardown resolves `orca_worktree_id` back through Orca and verifies it matches the inspected `worktree=` path before removing anything; mismatches or uninspectable paths preserve metadata and fail closed.
 - After the existing firstmate safety checks pass, teardown closes the recorded Orca terminal and releases the recorded worktree through `orca worktree rm --worktree id:<orca_worktree_id> --force`.
 - Teardown does not raw-delete Orca worktrees.
+
+## Semantic-name verification (2026-07-23)
+
+The live Orca CLI was not installed in this verification environment.
+The portable fake-CLI suite drove the production `fm-spawn.sh --backend orca` path and recorded the exact worktree and terminal names, metadata, launch, abort cleanup, and teardown:
+
+```text
+$ tests/fm-backend-orca.test.sh
+ok - fm-spawn.sh --backend orca: reuses implicit terminal, records metadata, launches harness
+ok - fm-spawn.sh --backend orca: removes worktree when terminal creation fails
+ok - fm-spawn.sh --backend orca: preserves metadata when abort cleanup fails
+```
+
+The recorded affected arguments are:
+
+```text
+orca worktree create --repo id:<repo> --name <id> --no-parent --setup skip --json
+orca terminal create --worktree id:<worktree> --title <id> --json
+```
+
+The assertions reject `fm-<id>` for new spawn-generated names and require `window=<id>` plus `session_name=<id>`.
+The existing real-Orca evidence below remains authoritative for Orca 1.4.116 runtime shapes and stable handle fields.
 
 ## Limitations
 

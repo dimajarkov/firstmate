@@ -37,11 +37,10 @@
 # function has no herdr-specific logic; it just returns meta's window=
 # verbatim).
 #
-# Authoritative task recovery/orphan discovery (ids may not deterministically match live state
-# after a server restart in a differently-configured session; see the
-# verification doc) uses LABEL matching (fm-<id> tab labels), never trusts a
-# stored pane id blindly: fm_backend_herdr_list_live. The presentation journal
-# is deliberately excluded from that path.
+# Task recovery/orphan discovery stays inside this home's workspace. Legacy
+# fm-* labels remain self-identifying; new exact semantic labels are listed
+# only when this home's metadata binds the same session name, tab id, and pane
+# id, so unrelated human tabs are never adopted by shape alone.
 #
 # Requires: herdr (CLI + socket), jq (JSON parsing). Bootstrap detects these
 # through fm_backend_required_tools only when herdr is the resolved backend;
@@ -270,8 +269,8 @@ fm_backend_herdr_projection_journal_token() {  # <journal> <task-id>
 # fm_backend_herdr_projection_concise_task_label: strip redundant owner
 # prefixes from a task id used only in the presentation workspace label.
 # Removes firstmate/, 2ndmate-<id>/, and a presentation-level fm- owner
-# prefix when present. The ordinary task tab remains fm-<id> and is not
-# built by this helper.
+# prefix when present. The ordinary task tab is built separately from the
+# exact task id.
 fm_backend_herdr_projection_concise_task_label() {  # <task-id>
   local task=$1
   case "$task" in
@@ -1940,8 +1939,8 @@ EOF
 }
 
 # fm_backend_herdr_list_live: recovery/orphan discovery. Lists every tab whose
-# label looks like a firstmate task window (fm-<id>) in <session>'s, THIS
-# HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
+# label is either a legacy fm-* task label or an exact title bound by this
+# home's metadata, in <session>'s THIS HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
 # home's), by LABEL - never by trusting a stored pane id, since ids are not
 # guaranteed stable across every server lifecycle (see herdr-verification-p2.md
 # "ID stability"). A caller running as a given home (e.g. a secondmate
@@ -1951,16 +1950,41 @@ EOF
 # workspace that does not exist yet simply lists nothing. One
 # "<session>:<pane_id>\t<label>" line per live task tab.
 fm_backend_herdr_list_live() {  # <session>
-  local session=$1 wsid tabs tab_id label pane_id
+  local session=$1 wsid tabs tab_id label pane_id state meta expected recorded_tab recorded_pane owned expected_pane
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
   [ -n "$wsid" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
+  state=${FM_STATE_OVERRIDE:-$FM_HOME/state}
   while IFS=$'\t' read -r tab_id label; do
     [ -n "$tab_id" ] || continue
+    owned=0
+    expected_pane=
+    # Historical fm-* labels remain self-identifying. New semantic labels are
+    # considered ours only when this home's durable metadata binds the exact
+    # session name to the current tab and pane ids, so an unrelated human tab
+    # is never adopted after identity was lost.
+    case "$label" in fm-*) owned=1 ;; esac
+    if [ "$owned" -ne 1 ]; then
+      for meta in "$state"/*.meta; do
+        [ -f "$meta" ] || continue
+        expected=$(grep '^session_name=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+        recorded_tab=$(grep '^herdr_tab_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+        recorded_pane=$(grep '^herdr_pane_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+        if [ -n "$expected" ] && [ "$expected" = "$label" ] \
+          && [ -n "$recorded_tab" ] && [ "$recorded_tab" = "$tab_id" ] \
+          && [ -n "$recorded_pane" ]; then
+          owned=2
+          expected_pane=$recorded_pane
+          break
+        fi
+      done
+    fi
+    [ "$owned" -gt 0 ] || continue
     pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
     [ -n "$pane_id" ] || continue
+    [ "$owned" -ne 2 ] || [ "$pane_id" = "$expected_pane" ] || continue
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
-  done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | "\(.tab_id)\t\(.label)"' 2>/dev/null)
 }
 
 # --- native event push: pane.agent_status_changed subscriber -----------------
