@@ -54,6 +54,7 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+fm_herdr_lab_provision "$SESSION" || fail "could not provision the explicit test-owned session"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
@@ -108,7 +109,7 @@ pass "repro setup: two real fm-<id> task tabs exist (crewmate-shaped and secondm
 fm_herdr_lab_stop "$SESSION" >/dev/null 2>&1 \
   || fail "could not stop the isolated session for the restart"
 sleep 0.5
-fm_backend_herdr_server_ensure "$SESSION" || fail "the isolated session's server did not come back up after the restart"
+fm_herdr_lab_provision "$SESSION" || fail "the explicit test-owned session did not come back up after the restart"
 
 if ! herdr pane get "$CREW_PANE_ID" --session "$SESSION" >/dev/null 2>&1; then
   fail "repro setup is wrong: the crewmate-shaped pane should survive a session restart alive (docs/herdr-backend.md 'ID stability'), but it is gone"

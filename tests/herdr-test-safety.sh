@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compatibility source for real-Herdr tests.
-# The production owner of the isolation, refuse-default, teardown, and
-# fleet-state tripwire contract is bin/fm-herdr-lab.sh.
+# The repository-owned test fixture for isolation, refuse-default, teardown,
+# and fleet-state tripwires is bin/fm-herdr-lab.sh.
 set -u
 
 # Herdr backend tests drive the real fm-spawn/fm-teardown but do not source

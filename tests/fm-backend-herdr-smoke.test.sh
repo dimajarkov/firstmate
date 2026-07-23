@@ -36,6 +36,7 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+fm_herdr_lab_provision "$SESSION" || fail "could not provision the explicit test-owned session"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
@@ -60,7 +61,7 @@ case "$CONTAINER" in
   *) fail "container_ensure returned an unexpected shape: $CONTAINER" ;;
 esac
 [ -n "$SEEDED_TAB_ID" ] || fail "the first container_ensure in a brand-new isolated session must CREATE the workspace and report its seeded default tab id"
-pass "real herdr: container_ensure starts the isolated session's server, creates the firstmate workspace ($CONTAINER), and reports its seeded default tab id ($SEEDED_TAB_ID)"
+pass "real herdr: container_ensure reuses the explicit test-owned server, creates the firstmate workspace ($CONTAINER), and reports its seeded default tab id ($SEEDED_TAB_ID)"
 
 # A second container_ensure must reuse (ADOPT) the same workspace (idempotent)
 # and report an EMPTY seeded tab id - the created-vs-adopted gate that fixes
@@ -227,7 +228,7 @@ pass "real herdr: list_live stays scoped to each home's own workspace - neither 
 fm_herdr_lab_stop "$SESSION" >/dev/null 2>&1 \
   || fail "could not stop the isolated session for the restart-stability check"
 sleep 0.5
-fm_backend_herdr_server_ensure "$SESSION" || fail "the isolated session's server did not come back up after the stop"
+fm_herdr_lab_provision "$SESSION" || fail "the explicit test-owned session did not come back up after the stop"
 
 POST_LIST=$(herdr workspace list --session "$SESSION" 2>&1)
 POST_PRIMARY_ID=$(printf '%s' "$POST_LIST" | jq -r '.result.workspaces[]? | select(.label == "firstmate") | .workspace_id')

@@ -435,8 +435,8 @@ Keep additions task-specific rather than repeating lifecycle instructions, and a
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
-If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
-The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
+Delegated work using Herdr must stay inside its already-running recorded parent session and may create only its workspace or tab there; missing or incompatible parent state stops dispatch rather than starting a replacement server.
+Herdr server and session lifecycle belongs only to repository-owned backend-test fixtures and is never authorized by a delegated brief or application lab wording.
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
 Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.

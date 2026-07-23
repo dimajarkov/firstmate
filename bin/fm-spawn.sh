@@ -836,7 +836,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
     }
     old_session=$FM_BACKEND_HERDR_SESSION
     old_pane=$FM_BACKEND_HERDR_PANE
-    fm_backend_herdr_server_ensure "$old_session" || {
+    fm_backend_herdr_server_require "$old_session" || {
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
     }
@@ -909,11 +909,12 @@ case "$BACKEND" in
       elif [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
         HERDR_SES=$(fm_backend_herdr_session)
         HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
-        # Session lock path resolution needs a live named-session socket.
-        # Ensure the server before journal publication so lock failure degrades
-        # to flat without ever creating an unlocked projection.
-        if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
-          echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
+        # Session lock path resolution needs the recorded parent session's
+        # live socket. Missing or incompatible parent state is a dispatch
+        # failure, never authority to start a replacement server.
+        if ! fm_backend_herdr_server_require "$HERDR_SES"; then
+          echo "error: herdr presentation requires the recorded parent session '$HERDR_SES'; refusing dispatch" >&2
+          exit 1
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
           HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
           HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
