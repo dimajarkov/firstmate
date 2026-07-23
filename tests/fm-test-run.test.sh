@@ -513,9 +513,20 @@ exit 1
 SH
   cat >"$repo/$a" <<'SH'
 #!/usr/bin/env bash
-sleep 0.5
+# Wait for the replacement worker instead of imposing a subsecond deadline on
+# process startup. If the scheduler wrongly waits for this oldest worker, the
+# bounded timeout releases it and leaves durable ordering evidence for C.
+i=0
+while [ "$i" -lt 500 ]; do
+  if [ -e "$SCHED_EVIDENCE/replacement-started" ]; then
+    echo "ok - slow fixture observed replacement worker"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 0.01
+done
 touch "$SCHED_EVIDENCE/slow-done"
-echo "ok - slow fixture"
+echo "ok - slow fixture timed out"
 SH
   cat >"$repo/$b" <<'SH'
 #!/usr/bin/env bash
@@ -524,6 +535,7 @@ echo "ok - fast fixture"
 SH
   cat >"$repo/$c" <<'SH'
 #!/usr/bin/env bash
+touch "$SCHED_EVIDENCE/replacement-started"
 if [ -e "$SCHED_EVIDENCE/slow-done" ]; then
   echo "not ok - scheduler waited for oldest worker"
   exit 1

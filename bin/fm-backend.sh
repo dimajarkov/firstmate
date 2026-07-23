@@ -410,10 +410,24 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
   printf 'tmux'
 }
 
+# New task metadata records the exact user-visible backend name. Older metadata
+# predates that field and therefore retains the historical fm-<id> expectation.
+fm_backend_expected_label_of_meta() {  # <meta-file>
+  local meta=$1 label id
+  label=$(fm_meta_get "$meta" session_name)
+  if [ -n "$label" ]; then
+    printf '%s' "$label"
+    return 0
+  fi
+  id=${meta##*/}
+  id=${id%.meta}
+  [ -n "$id" ] && printf 'fm-%s' "$id"
+}
+
 fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
   local raw=$1 state=$2 id
   id=$(fm_backend_task_id_for_selector "$raw" "$state" 2>/dev/null || true)
-  [ -n "$id" ] && printf 'fm-%s' "$id"
+  [ -n "$id" ] && fm_backend_expected_label_of_meta "$state/$id.meta"
   return 0
 }
 

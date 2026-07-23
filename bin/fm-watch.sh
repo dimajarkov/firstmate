@@ -234,9 +234,9 @@ window_backend() {
 }
 
 window_label() {
-  local w=$1 task
-  task=$(window_to_task "$w" "$STATE")
-  [ -n "$task" ] && printf 'fm-%s' "$task"
+  local w=$1 meta
+  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
+  [ -n "$meta" ] && fm_backend_expected_label_of_meta "$meta"
 }
 
 recorded_windows() {

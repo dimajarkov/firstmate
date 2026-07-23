@@ -11,9 +11,8 @@
 # Container shape: cmux has no "session" layer to multiplex the way
 # tmux/herdr/zellij do - there is just "the app" (one running GUI instance).
 # ONE cmux workspace PER TASK (mirrors tmux's one-window-per-task / zellij's
-# one-tab-per-task), with exactly one surface inside it. cmux has no session
-# layer, so workspace titles are scoped by firstmate home and installation
-# path inside this adapter.
+# one-tab-per-task), with exactly one surface inside it. New worker/scout
+# workspaces use the exact task id; old home-scoped titles are compatibility-only.
 #
 # Target string shape: "<workspace_uuid>:<surface_uuid>" - both bare UUIDs
 # with no embedded colon, so splitting on the FIRST colon is trivially
@@ -73,15 +72,14 @@
 #      `self.id = UUID()`, with no restored-id parameter, unlike surfaces'
 #      `restoredSurfaceId ?? UUID()` path scoped to same-run object reuse).
 #      No live app restart of the captain's own content was performed to
-#      confirm this; see docs/cmux-backend.md for the reasoning. Recovery
-#      therefore uses scoped-title matching from the caller-facing fm-<id>
-#      label, never a stored uuid, mirroring herdr's/zellij's own recovery
-#      posture.
+#      confirm this; see docs/cmux-backend.md for the reasoning. New exact
+#      titles never recover by title alone after UUID loss; old scoped titles
+#      retain compatibility recovery.
 #   6. NO title uniqueness enforcement for workspaces OR surfaces/tabs -
 #      verified live (two workspaces, and two surfaces in one workspace, all
 #      created successfully sharing one title). The duplicate check below is
-#      ours, mirroring every other adapter, and uses home-scoped titles so a
-#      shared cmux app cannot cross-match another firstmate home's task.
+#      ours and refuses both the exact title and the old scoped compatibility
+#      title before creation.
 #
 #   Unanticipated finding, load-bearing for this adapter: the control socket
 #   defaults to `socketControlMode=cmuxOnly`, which REJECTS any CLI process
@@ -315,7 +313,8 @@ fm_backend_cmux_home_label() {
   fm_backend_hometag
 }
 
-fm_backend_cmux_scoped_title() {  # <fm-task-label>
+# The home-scoped form is retained for compatibility with existing workspaces.
+fm_backend_cmux_scoped_title() {  # <task-label>
   local label=$1 rest home
   home=$(fm_backend_cmux_home_label)
   case "$label" in
@@ -323,6 +322,14 @@ fm_backend_cmux_scoped_title() {  # <fm-task-label>
     *) rest=$label ;;
   esac
   printf 'fm-%s-%s' "$home" "$rest"
+}
+
+fm_backend_cmux_legacy_scoped_title() {  # <task-label>
+  fm_backend_cmux_scoped_title "$1"
+}
+
+fm_backend_cmux_visible_title() {  # <task-label>
+  printf '%s' "$1"
 }
 
 # fm_backend_cmux_workspace_id_for_label: the live workspace id whose title
@@ -333,6 +340,13 @@ fm_backend_cmux_workspace_id_for_label() {  # <label>
   local label=$1
   fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null \
     | jq -r --arg want "$label" '.workspaces[]? | select(.title == $want) | .id' 2>/dev/null | head -1
+}
+
+fm_backend_cmux_workspace_id_for_either_label() {  # <label> <legacy-label>
+  local label=$1 legacy=$2
+  fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null \
+    | jq -r --arg want "$label" --arg legacy "$legacy" \
+      '.workspaces[]? | select(.title == $want or .title == $legacy) | .id' 2>/dev/null | head -1
 }
 
 fm_backend_cmux_surface_id_for_workspace() {  # <workspace_id>
@@ -351,19 +365,26 @@ fm_backend_cmux_surface_id_for_workspace() {  # <workspace_id>
 # focus-restore dance is needed, unlike zellij. Echoes "<workspace_id>
 # <surface_id>" on success.
 fm_backend_cmux_create_task() {  # <label> <cwd>
-  local label=$1 cwd=$2 title dup out wsid sfid
-  title=$(fm_backend_cmux_scoped_title "$label")
-  dup=$(fm_backend_cmux_workspace_id_for_label "$title")
+  local label=$1 cwd=$2 title legacy dup out matches count wsid sfid
+  title=$(fm_backend_cmux_visible_title "$label")
+  legacy=$(fm_backend_cmux_legacy_scoped_title "$label")
+  dup=$(fm_backend_cmux_workspace_id_for_either_label "$title" "$legacy")
   if [ -n "$dup" ]; then
-    echo "error: cmux workspace '$title' already exists" >&2
+    echo "error: cmux workspace for '$title' already exists; refusing cross-task attachment" >&2
     return 1
   fi
   out=$(fm_backend_cmux_cli new-workspace --name "$title" --cwd "$cwd" --focus false --id-format uuids 2>&1) || {
     echo "error: cmux new-workspace failed for '$title': $out" >&2
     return 1
   }
-  wsid=$(fm_backend_cmux_workspace_id_for_label "$title")
-  [ -n "$wsid" ] || { echo "error: could not resolve a cmux workspace id for '$title' after creation" >&2; return 1; }
+  matches=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null \
+    | jq -r --arg want "$title" '.workspaces[]? | select(.title == $want) | .id' 2>/dev/null)
+  count=$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')
+  if [ "$count" -ne 1 ]; then
+    echo "error: expected exactly one cmux workspace for '$title' after creation, found $count; refusing ambiguous cross-task attachment" >&2
+    return 1
+  fi
+  wsid=$matches
   sfid=$(fm_backend_cmux_surface_id_for_workspace "$wsid")
   [ -n "$sfid" ] || { echo "error: could not resolve the default surface for cmux workspace '$title' ($wsid)" >&2; return 1; }
   printf '%s %s' "$wsid" "$sfid"
@@ -408,18 +429,22 @@ fm_backend_cmux_surface_exists() {  # <workspace_id> <surface_id>
 # header for the fresh-surface pitfall this avoids). When the caller knows
 # the owning firstmate task label, refresh stale workspace/surface ids by label.
 fm_backend_cmux_target_ready() {  # <target> [expected-label]
-  local expected_label=${2:-} expected_title title wsid sfid
+  local expected_label=${2:-} expected_title legacy_title title wsid sfid
   fm_backend_cmux_parse_target "$1" || return 1
   if [ -n "$expected_label" ]; then
-    expected_title=$(fm_backend_cmux_scoped_title "$expected_label")
+    expected_title=$(fm_backend_cmux_visible_title "$expected_label")
+    legacy_title=$(fm_backend_cmux_legacy_scoped_title "$expected_label")
     title=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null | jq -r --arg id "$FM_BACKEND_CMUX_WORKSPACE" '.workspaces[]? | select(.id == $id) | .title' 2>/dev/null)
-    if [ "$title" = "$expected_title" ]; then
+    if [ "$title" = "$expected_title" ] || [ "$title" = "$legacy_title" ]; then
       fm_backend_cmux_surface_exists "$FM_BACKEND_CMUX_WORKSPACE" "$FM_BACKEND_CMUX_SURFACE" && return 0
       wsid=$FM_BACKEND_CMUX_WORKSPACE
     elif [ -n "$title" ]; then
       return 1
     else
-      wsid=$(fm_backend_cmux_workspace_id_for_label "$expected_title")
+      # A legacy home-scoped title proves ownership across an app relaunch.
+      # An unscoped semantic title cannot distinguish another home's same-id
+      # task once UUIDs changed, so never recover it by label alone.
+      wsid=$(fm_backend_cmux_workspace_id_for_label "$legacy_title")
       [ -n "$wsid" ] || return 1
     fi
     sfid=$(fm_backend_cmux_surface_id_for_workspace "$wsid")
@@ -659,7 +684,7 @@ fm_backend_cmux_kill() {  # <target> [unused] [expected-label]
 # One "<workspace_id>:<surface_id>\t<fm-id>" line per live task workspace.
 # Read-only: an unreachable cmux simply lists nothing.
 fm_backend_cmux_list_live() {
-  local wss wsid title sfid home prefix plain
+  local wss wsid title sfid home prefix plain state meta expected recorded_workspace recorded_surface
   home=$(fm_backend_cmux_home_label)
   prefix="fm-$home-"
   wss=$(fm_backend_cmux_cli workspace list --json --id-format uuids 2>/dev/null) || return 0
@@ -671,4 +696,20 @@ fm_backend_cmux_list_live() {
     [ -n "$sfid" ] || continue
     printf '%s:%s\tfm-%s\n' "$wsid" "$sfid" "$plain"
   done < <(printf '%s' "$wss" | jq -r --arg prefix "$prefix" '.workspaces[]? | select(.title | startswith($prefix)) | "\(.id)\t\(.title)"' 2>/dev/null)
+
+  # Exact semantic titles are owned only through this home's recorded UUID.
+  state=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    expected=$(grep '^session_name=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    recorded_workspace=$(grep '^cmux_workspace_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    recorded_surface=$(grep '^cmux_surface_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$expected" ] && [ -n "$recorded_workspace" ] && [ -n "$recorded_surface" ] || continue
+    if ! printf '%s' "$wss" | jq -e --arg id "$recorded_workspace" --arg title "$expected" \
+      '.workspaces[]? | select(.id == $id and .title == $title)' >/dev/null 2>&1; then
+      continue
+    fi
+    fm_backend_cmux_surface_exists "$recorded_workspace" "$recorded_surface" || continue
+    printf '%s:%s\t%s\n' "$recorded_workspace" "$recorded_surface" "$expected"
+  done
 }

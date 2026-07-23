@@ -282,6 +282,7 @@ spawn_abort_cleanup() {
         if [ -d "$STATE" ]; then
           {
             echo "window=$W"
+            echo "session_name=$W"
             echo "worktree=${WT:-}"
             echo "project=$PROJ_ABS"
             echo "harness=$HARNESS"
@@ -858,17 +859,24 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
   esac
 }
 
-W="fm-$ID"
+# Ordinary workers and scouts use the task id itself as their visible backend
+# name. The task id is already validated and unique within this home. Keep the
+# historical fm-<id> shape for secondmates, whose identity contract is separate.
+if [ "$KIND" = secondmate ]; then
+  W="fm-$ID"
+else
+  W=$ID
+fi
 case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
     T="$SES:$W"
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
+    # non-default tmux config cannot rename the window away from its task id once
     # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
     # rename-critical worktree-detection steps below; the persisted window= handle
-    # stays $T (the name form), which is safe now that rename is disabled.
+    # stays $T (the semantic name form), which is safe now that rename is disabled.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
     WT_TARGET="$WID"
     ;;
@@ -961,7 +969,7 @@ EOF
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
-    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$PROJ_ABS") || exit 1
+    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$PROJ_ABS" "$KIND") || exit 1
     read -r ZELLIJ_TAB_ID ZELLIJ_PANE_ID <<EOF
 $ZELLIJ_TASK_IDS
 EOF
@@ -1244,6 +1252,7 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 {
   echo "window=$META_WINDOW"
+  echo "session_name=$W"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"

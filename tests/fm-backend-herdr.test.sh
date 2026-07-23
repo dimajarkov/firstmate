@@ -561,13 +561,13 @@ test_create_task_creates_and_parses_ids() {
   printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 fm-newtask /tmp/proj' "$ROOT" )
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w1 lab-arena-carlos-booking-context-loss-fix-20260723 /tmp/proj' "$ROOT" )
   [ "$out" = "w1:t2 w1:p2" ] || fail "create_task should echo '<tab_id> <pane_id>', got '$out'"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create'$'\x1f''--workspace'$'\x1f''w1'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--label'$'\x1f''fm-newtask' \
-    "create_task did not call tab create with workspace/cwd/label"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create'$'\x1f''--workspace'$'\x1f''w1'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--label'$'\x1f''lab-arena-carlos-booking-context-loss-fix-20260723' \
+    "create_task did not preserve the exact semantic label and task-date digits"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
     "create_task must never prune when called with no seeded default tab id (the 4th arg defaults to empty)"
-  pass "fm_backend_herdr_create_task: creates a tab and parses tab_id/pane_id from the JSON response, prunes nothing when no seeded tab id is given"
+  pass "fm_backend_herdr_create_task: creates an exact semantic tab with task-date digits and parses its IDs"
 }
 
 # --- container_ensure / create_task: --no-focus and per-home label ----------
@@ -1362,6 +1362,27 @@ test_list_live_scoped_to_this_homes_workspace_only() {
   assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w1' \
     "list_live must never query the primary's (or a sibling secondmate's) workspace"
   pass "fm_backend_herdr_list_live: scoped to this home's own workspace, never a sibling home's"
+}
+
+test_list_live_binds_semantic_labels_to_recorded_ids() {
+  local dir log resp fb out home state
+  dir="$TMP_ROOT/list-live-semantic"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/list-live-semantic-home"; state="$home/state"; mkdir -p "$state"
+  cat > "$state/task.meta" <<'META'
+session_name=lab-arena-carlos-booking-context-loss-fix-20260723
+herdr_tab_id=w1:t1
+herdr_pane_id=w1:p1
+META
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","label":"lab-arena-carlos-booking-context-loss-fix-20260723"},{"tab_id":"w1:t2","label":"unowned-semantic-task-20260723"},{"tab_id":"w1:t3","label":"fm-legacy-task"}]}}' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"panes":[{"pane_id":"w1:p3","tab_id":"w1:t3"}]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_list_live fmtest' "$ROOT" )
+  [ "$out" = $'fmtest:w1:p1\tlab-arena-carlos-booking-context-loss-fix-20260723\nfmtest:w1:p3\tfm-legacy-task' ] \
+    || fail "list_live did not bind semantic ownership to current metadata ids: $out"
+  pass "fm_backend_herdr_list_live: semantic labels require exact current tab and pane identity"
 }
 
 # --- target parsing, key normalization ---------------------------------------
@@ -2804,6 +2825,7 @@ test_projected_abort_cleanup_holds_presentation_lock
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
+test_list_live_binds_semantic_labels_to_recorded_ids
 test_parse_target
 test_normalize_key
 test_capture_calls_pane_read

@@ -12,8 +12,8 @@
 # Session shape (report "Zellij implementation choices" #1, unchanged by
 # empirical verification): ONE zellij session (default name "firstmate",
 # overridable via FM_ZELLIJ_SESSION for test isolation - mirrors herdr's
-# HERDR_SESSION), ONE tab per task, with caller-facing label "fm-<id>" and a
-# home-scoped actual title. No per-home workspace split (unlike herdr's later
+# HERDR_SESSION), ONE tab per task. Ordinary workers/scouts use the exact task
+# id; secondmates retain their home-scoped title. No per-home workspace split (unlike herdr's later
 # P3 refinement): zellij has no workspace concept, only sessions/tabs/panes,
 # so this stays exactly the report's original choice. Target string shape:
 # "<zellij-session>:<pane-id>" (pane id is a bare non-negative integer with no
@@ -21,23 +21,12 @@
 # mirrors herdr's target-string convention).
 #
 # Home-scoped tab titles (closes a cross-home collision gap): because every
-# task in every firstmate home - primary or secondmate - shares this ONE
-# session's tab bar with no per-home split, and zellij enforces no tab-name
-# uniqueness at all, two firstmate homes whose task ids happen to collide
-# could send/peek/close each other's tabs. This is the exact gap a
-# captain-directed no-mistakes review gate caught for the cmux backend
-# (docs/cmux-backend.md) and this same tag mechanism (bin/backends/cmux.sh's
-# fm_backend_cmux_scoped_title, now shared via bin/fm-backend-hometag-lib.sh)
-# is ported here for the identical reason. Every NEW tab is created with a
-# title tagged with this installation's home label (fm_backend_zellij_scoped_title,
-# "fm-<hometag>-<id>"); every list/find/recover/kill path is scoped to this
-# home's own tag. A tab created before this change carries the old untagged
-# "fm-<id>" title; target_ready, kill, and ad hoc selector fallback still
-# match it, but ONLY when that bare title is unambiguous (exactly one live tab
-# in the session carries it) - see fm_backend_zellij_tab_matches_label and
-# docs/zellij-backend.md "Home-scoped tab titles" for the full migration
-# posture. Moving/relocating a firstmate installation changes its tag
-# (acceptable - recorded worktree paths do not survive a move either).
+# task in every firstmate home shares this ONE session's tab bar, and zellij
+# enforces no title uniqueness. New ordinary worker/scout tabs use the exact
+# task id. Creation refuses when either that exact title or this home's old
+# scoped compatibility title exists, so it never cross-attaches. Operations
+# bind exact titles to recorded tab/pane ids; bulk listing requires this home's
+# matching metadata. Existing fm-<hometag>-<id> tabs retain compatibility.
 #
 # Empirical verification (real zellij 0.44.0, macOS aarch64, 2026-07-02;
 # docs/zellij-backend.md has the full evidence log) resolved every "gaps to
@@ -146,12 +135,10 @@ fm_backend_zellij_home_label() {
   fm_backend_hometag
 }
 
-# fm_backend_zellij_scoped_title: the actual tab title a NEW task's tab is
-# created with - the caller-facing "fm-<id>" label, home-tagged as
-# "fm-<hometag>-<id>" (mirrors bin/backends/cmux.sh's identical
-# fm_backend_cmux_scoped_title). Every list/find/recover/kill path below
-# scopes its own-home matches through this.
-fm_backend_zellij_scoped_title() {  # <fm-task-label>
+# fm_backend_zellij_scoped_title: compatibility derivation for tabs created
+# before exact semantic titles shipped.
+# The home-scoped form is retained for compatibility with existing tabs.
+fm_backend_zellij_scoped_title() {  # <task-label>
   local label=$1 rest home
   home=$(fm_backend_zellij_home_label)
   case "$label" in
@@ -159,6 +146,14 @@ fm_backend_zellij_scoped_title() {  # <fm-task-label>
     *) rest=$label ;;
   esac
   printf 'fm-%s-%s' "$home" "$rest"
+}
+
+fm_backend_zellij_legacy_scoped_title() {  # <task-label>
+  fm_backend_zellij_scoped_title "$1"
+}
+
+fm_backend_zellij_visible_title() {  # <task-label>
+  printf '%s' "$1"
 }
 
 # fm_backend_zellij_tool_check: refuse loudly if zellij or jq is missing.
@@ -283,11 +278,8 @@ fm_backend_zellij_pane_exists() {  # <session> <pane_id>
 
 # fm_backend_zellij_tab_matches_label: does <tab_id> in <session> carry the
 # tab name firstmate expects for the caller-facing task label <label>?
-# Checks the home-scoped, tagged title first (fm_backend_zellij_scoped_title
-# - what every NEW tab is created with), then falls back to the legacy
-# untagged bare title (the plain <label>, e.g. "fm-<id>") for a tab created
-# before this home-scoping change shipped - but ONLY when that bare name is
-# not ambiguous: exactly one live tab in the whole session carries it. A bare
+# Checks the old home-scoped compatibility title first, then the exact
+# semantic title, which is accepted only when one live tab carries it. A bare
 # name shared by 2+ live tabs (this home's own pre-migration tab plus, say, a
 # same-named tab from a different firstmate home sharing this one zellij
 # session) refuses rather than silently trusting whichever one happened to
@@ -297,10 +289,10 @@ fm_backend_zellij_pane_exists() {  # <session> <pane_id>
 # already-fetched JSON), so a caller whose fake-CLI fixture supplies exactly
 # one list-tabs response keeps working unchanged.
 fm_backend_zellij_tab_matches_label() {  # <session> <tab_id> <label>
-  local session=$1 tab_id=$2 label=$3 scoped tabs count
-  scoped=$(fm_backend_zellij_scoped_title "$label")
+  local session=$1 tab_id=$2 label=$3 legacy tabs count
+  legacy=$(fm_backend_zellij_legacy_scoped_title "$label")
   tabs=$(fm_backend_zellij_cli "$session" action list-tabs --json 2>/dev/null)
-  printf '%s' "$tabs" | jq -e --argjson t "$tab_id" --arg want "$scoped" \
+  printf '%s' "$tabs" | jq -e --argjson t "$tab_id" --arg want "$legacy" \
     '[.[]? | select(.tab_id == $t and .name == $want)] | length > 0' >/dev/null 2>&1 && return 0
   printf '%s' "$tabs" | jq -e --argjson t "$tab_id" --arg want "$label" \
     '[.[]? | select(.tab_id == $t and .name == $want)] | length > 0' >/dev/null 2>&1 || return 1
@@ -312,9 +304,9 @@ fm_backend_zellij_tab_matches_label() {  # <session> <tab_id> <label>
 # <session>, refusing an existing <label>. Zellij does NOT enforce tab-name
 # uniqueness itself (verified: two tabs can share a name), so the duplicate
 # check is ours, mirroring both tmux's and herdr's adapters. The tab is
-# always created with the home-scoped, tagged title
-# (fm_backend_zellij_scoped_title), never the bare caller-facing label - see
-# the file header's "Home-scoped tab titles" note.
+# created with the exact caller-supplied label for workers and scouts.
+# Secondmates retain the home-scoped tagged title. The compatibility title is checked only to
+# refuse a duplicate left by an older deployment.
 #
 # Focus-steal mitigation (verified real finding, no upstream suppression
 # flag exists): `new-tab` unconditionally focuses the created tab for every
@@ -325,14 +317,19 @@ fm_backend_zellij_tab_matches_label() {  # <session> <tab_id> <label>
 # spawn). Best-effort: a failure to restore never fails the spawn.
 #
 # Echoes "<tab_id> <pane_id>" on success.
-fm_backend_zellij_create_task() {  # <session> <label> <cwd>
-  local session=$1 label=$2 cwd=$3 title tabs dup prev_active tab_id pane_id
+fm_backend_zellij_create_task() {  # <session> <label> <cwd> [kind]
+  local session=$1 label=$2 cwd=$3 kind=${4:-ship} title legacy tabs dup prev_active tab_id post_tabs title_count own_count pane_id
   fm_backend_zellij_session_exists "$session" || { echo "error: zellij session '$session' does not exist; run container_ensure first" >&2; return 1; }
-  title=$(fm_backend_zellij_scoped_title "$label")
+  legacy=$(fm_backend_zellij_legacy_scoped_title "$label")
+  if [ "$kind" = secondmate ]; then
+    title=$legacy
+  else
+    title=$(fm_backend_zellij_visible_title "$label")
+  fi
   tabs=$(fm_backend_zellij_cli "$session" action list-tabs --json 2>/dev/null)
-  dup=$(printf '%s' "$tabs" | jq -r --arg want "$title" '.[]? | select(.name == $want) | .tab_id' 2>/dev/null | head -1)
+  dup=$(printf '%s' "$tabs" | jq -r --arg want "$title" --arg legacy "$legacy" '.[]? | select(.name == $want or .name == $legacy) | .tab_id' 2>/dev/null | head -1)
   if [ -n "$dup" ]; then
-    echo "error: zellij tab '$title' already exists in session '$session'" >&2
+    echo "error: zellij tab for '$title' already exists in session '$session'; refusing cross-task attachment" >&2
     return 1
   fi
   prev_active=$(printf '%s' "$tabs" | jq -r '.[]? | select(.active == true) | .tab_id' 2>/dev/null | head -1)
@@ -343,6 +340,17 @@ fm_backend_zellij_create_task() {  # <session> <label> <cwd>
       return 1
       ;;
   esac
+  # Recheck after creation to close the precheck race between independent
+  # firstmate homes sharing one zellij session. The returned tab id proves
+  # which new tab is ours, so ambiguity cleanup cannot close another task.
+  post_tabs=$(fm_backend_zellij_cli "$session" action list-tabs --json 2>/dev/null)
+  title_count=$(printf '%s' "$post_tabs" | jq -r --arg want "$title" '[.[]? | select(.name == $want)] | length' 2>/dev/null)
+  own_count=$(printf '%s' "$post_tabs" | jq -r --arg want "$title" --argjson tab "$tab_id" '[.[]? | select(.name == $want and .tab_id == $tab)] | length' 2>/dev/null)
+  if [ "$title_count" != 1 ] || [ "$own_count" != 1 ]; then
+    fm_backend_zellij_cli "$session" action close-tab-by-id "$tab_id" >/dev/null 2>&1 || true
+    echo "error: zellij tab title '$title' became ambiguous during creation; closed only the newly returned tab $tab_id and refused cross-task attachment" >&2
+    return 1
+  fi
   pane_id=$(fm_backend_zellij_pane_for_tab "$session" "$tab_id")
   if [ -z "$pane_id" ]; then
     echo "error: could not find a terminal pane for zellij tab $tab_id (session '$session')" >&2
@@ -571,7 +579,7 @@ fm_backend_zellij_kill() {  # <target> [tab_id] [expected_label]
 # callers see the same plain label they always have). Read-only: a session
 # that does not exist yet simply lists nothing.
 fm_backend_zellij_list_live() {  # <session>
-  local session=$1 home prefix tabs tab_id name pane_id plain
+  local session=$1 home prefix tabs tab_id name pane_id plain state meta expected recorded_tab recorded_pane
   fm_backend_zellij_session_exists "$session" || return 0
   home=$(fm_backend_zellij_home_label)
   prefix="fm-$home-"
@@ -584,6 +592,24 @@ fm_backend_zellij_list_live() {  # <session>
     [ -n "$pane_id" ] || continue
     printf '%s:%s\tfm-%s\n' "$session" "$pane_id" "$plain"
   done < <(printf '%s' "$tabs" | jq -r --arg prefix "$prefix" '.[]? | select(.name | startswith($prefix)) | "\(.tab_id)\t\(.name)"' 2>/dev/null)
+
+  # Exact semantic labels carry no global ownership prefix. List one only when
+  # this home's metadata binds both its title and current tab id.
+  state=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    expected=$(grep '^session_name=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    recorded_tab=$(grep '^zellij_tab_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    recorded_pane=$(grep '^zellij_pane_id=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$expected" ] && [ -n "$recorded_tab" ] && [ -n "$recorded_pane" ] || continue
+    if ! printf '%s' "$tabs" | jq -e --arg name "$expected" --argjson tab "$recorded_tab" \
+      '.[]? | select(.tab_id == $tab and .name == $name)' >/dev/null 2>&1; then
+      continue
+    fi
+    pane_id=$(fm_backend_zellij_pane_for_tab "$session" "$recorded_tab") || continue
+    [ "$pane_id" = "$recorded_pane" ] || continue
+    printf '%s:%s\t%s\n' "$session" "$pane_id" "$expected"
+  done
 }
 
 # fm_backend_zellij_resolve_bare_selector: the live-tab-listing fallback for
@@ -600,7 +626,7 @@ fm_backend_zellij_list_live() {  # <session>
 # meta or an explicit recorded target.
 fm_backend_zellij_resolve_bare_selector() {  # <name>
   local name=$1 scoped sessions session tabs tab_id count=0 pane_id bare_session='' bare_tab_id=''
-  scoped=$(fm_backend_zellij_scoped_title "$name")
+  scoped=$(fm_backend_zellij_legacy_scoped_title "$name")
   sessions=$(zellij list-sessions --short --no-formatting 2>/dev/null)
   while IFS= read -r session; do
     [ -n "$session" ] || continue

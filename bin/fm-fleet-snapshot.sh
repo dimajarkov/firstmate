@@ -398,7 +398,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
-  local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
+  local meta id kind harness mode yolo project worktree home projects backend target session_name status_log report_path
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
@@ -417,6 +417,7 @@ task_json_lines() {
     projects=$(meta_value "$meta" projects)
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
+    session_name=$(fm_backend_expected_label_of_meta "$meta")
     status_log="$STATE/$id.status"
     report_path="$DATA/$id/report.md"
     pr=$(meta_value "$meta" pr)
@@ -469,7 +470,7 @@ task_json_lines() {
 
     endpoint_exists=null
     if [ -n "$target" ]; then
-      if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+      if fm_backend_target_exists "$backend" "$target" "$session_name" >/dev/null 2>&1; then
         endpoint_exists=true
       else
         endpoint_exists=false
@@ -499,6 +500,7 @@ task_json_lines() {
       --arg projects "$projects" \
       --arg backend "$backend" \
       --arg target "$target" \
+      --arg session_name "$session_name" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
       --arg agent_alive "$agent_alive" \
@@ -523,6 +525,7 @@ task_json_lines() {
         yolo:($yolo // ""),
         project:($project // ""),
         backend:$backend,
+        session_name:$session_name,
         paths:{
           meta:$meta_path,
           status_log:$status_log,
@@ -967,7 +970,7 @@ terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradi
   backend=$(printf '%s' "$task" | jq -r '.backend // ""')
   target=$(printf '%s' "$task" | jq -r '.endpoint.target // ""')
   exists=$(printf '%s' "$task" | jq -r '.endpoint.exists // "unknown"')
-  expected=$(printf '%s' "$task" | jq -r '"fm-" + (.id // "")')
+  expected=$(printf '%s' "$task" | jq -r '.session_name // ("fm-" + (.id // ""))')
   if [ -z "$target" ] || [ "$exists" = false ]; then
     [ "$exists" = false ] && reason="recorded endpoint is absent" || reason="no recorded endpoint"
     jq -n --arg observed "$SNAPSHOT_NOW" --arg reason "$reason" \
