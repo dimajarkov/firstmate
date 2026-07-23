@@ -58,8 +58,10 @@ test_treehouse_installer_pins_exact_version_and_checksums() {
 }
 
 test_cleanup_only_targets_job_owned_lab_sessions() {
-  assert_grep 'fm-lab-' "$CLEANUP" \
-    "cleanup must only consider fm-lab-* session names"
+  assert_grep '^lab-' "$CLEANUP" \
+    "cleanup must consider new deterministic lab-* session names"
+  assert_grep '^fm-lab-' "$CLEANUP" \
+    "cleanup must retain legacy fm-lab-* session cleanup"
   assert_grep 'default == false' "$CLEANUP" \
     "cleanup must refuse default sessions"
   assert_grep 'snapshot' "$CLEANUP" \
@@ -69,7 +71,7 @@ test_cleanup_only_targets_job_owned_lab_sessions() {
   # Must not call ambient server stop.
   assert_no_grep 'server stop' "$CLEANUP" \
     "cleanup must never call ambient herdr server stop"
-  pass "cleanup is bounded to job-owned fm-lab-* sessions"
+  pass "cleanup is bounded to job-owned lab-* and legacy fm-lab-* sessions"
 }
 
 test_ci_wires_installers_and_required_lane() {

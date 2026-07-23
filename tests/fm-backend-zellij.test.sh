@@ -328,6 +328,28 @@ test_list_live_scopes_to_own_home_tag() {
   pass "fm_backend_zellij_list_live: scopes to this home's own tag - excludes a different installation's tagged tab and unrelated tabs"
 }
 
+test_list_live_binds_semantic_title_to_recorded_ids() {
+  local dir fb out state title
+  dir="$TMP_ROOT/list-live-semantic"; state="$dir/state"; mkdir -p "$dir/responses" "$state"
+  title=lab-arena-carlos-booking-context-loss-fix-20260723
+  cat > "$state/task.meta" <<META
+session_name=$title
+zellij_tab_id=3
+zellij_pane_id=7
+META
+  zellij_multi_tab_response "$dir" 1 \
+    3 "$title" \
+    4 "unowned-semantic-task-20260723"
+  zellij_pane_response "$dir" 2 7 3
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_STATE_OVERRIDE="$state" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_list_live firstmate' "$ROOT" )
+  [ "$out" = $'firstmate:7\t'"$title" ] \
+    || fail "list_live did not bind the semantic title to exact current zellij ids: $out"
+  pass "fm_backend_zellij_list_live: semantic titles require exact current tab and pane identity"
+}
+
 test_resolve_bare_selector_prefers_scoped_title() {
   local dir fb out title
   dir="$TMP_ROOT/resolve-scoped"; mkdir -p "$dir/responses"
@@ -449,38 +471,80 @@ test_dispatch_busy_state_unknown_for_zellij() {
 test_create_task_refuses_duplicate_label() {
   local dir fb out status title
   dir="$TMP_ROOT/dup-task"; mkdir -p "$dir/responses"
-  title=$(zellij_expected_scoped_title fm-dup1)
-  # 1: list-tabs --json -> existing tab already carrying the home-scoped title
+  title=dup1
+  # 1: list-tabs --json -> another task already owns the semantic title.
   printf '[{"tab_id":2,"name":"%s","active":false}]\n' "$title" > "$dir/responses/1.out"
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate fm-dup1 /tmp/proj' "$ROOT" 2>&1 )
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate dup1 /tmp/proj' "$ROOT" 2>&1 )
   status=$?
-  [ "$status" -ne 0 ] || fail "create_task should refuse an existing tab name (zellij itself does not enforce uniqueness)"
+  [ "$status" -ne 0 ] || fail "create_task should refuse an existing semantic tab name"
   assert_contains "$out" "already exists" "create_task did not report the duplicate name"
-  assert_contains "$out" "$title" "create_task's duplicate error did not name the home-scoped title"
-  pass "fm_backend_zellij_create_task: refuses a duplicate home-scoped tab title (zellij's own new-tab has no uniqueness check)"
+  assert_contains "$out" "$title" "create_task's duplicate error did not name the semantic title"
+  pass "fm_backend_zellij_create_task: refuses cross-task attachment to a duplicate semantic title"
+}
+
+test_create_task_refuses_simultaneous_duplicate() {
+  local dir fb out status title
+  dir="$TMP_ROOT/dup-task-race"; mkdir -p "$dir/responses"
+  title=raced-task-20260723
+  printf '[]\n' > "$dir/responses/1.out"
+  printf '3\n' > "$dir/responses/2.out"
+  printf '[{"tab_id":3,"name":"%s","active":false},{"tab_id":4,"name":"%s","active":false}]\n' \
+    "$title" "$title" > "$dir/responses/3.out"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate "$1" /tmp/proj' "$ROOT" "$title" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "create_task should refuse a simultaneous same-title tab race"
+  assert_contains "$out" "became ambiguous" "create_task did not report the post-create ambiguity"
+  assert_contains "$(cat "$dir/log")" $'\x1f''close-tab-by-id'$'\x1f''3' \
+    "create_task did not close only its newly returned tab after the race"
+  assert_not_contains "$(cat "$dir/log")" $'\x1f''close-tab-by-id'$'\x1f''4' \
+    "create_task tried to close the competing task's tab"
+  pass "fm_backend_zellij_create_task: simultaneous same-title creation cleans only its own tab and refuses"
 }
 
 test_create_task_creates_and_parses_ids() {
   local dir fb out title
   dir="$TMP_ROOT/create-task"; mkdir -p "$dir/responses"
-  title=$(zellij_expected_scoped_title fm-newtask)
+  title=lab-arena-carlos-booking-context-loss-fix-20260723
   # 1: list-tabs --json -> no existing tabs, none active
   printf '[]\n' > "$dir/responses/1.out"
   # 2: new-tab --cwd --name -> bare tab id on stdout
   printf '3\n' > "$dir/responses/2.out"
-  # 3: list-panes --json -> the new tab's terminal pane
-  printf '[{"id":7,"tab_id":3,"is_plugin":false}]\n' > "$dir/responses/3.out"
+  # 3: post-create uniqueness check proves exactly our tab carries the title
+  printf '[{"tab_id":3,"name":"%s","active":true}]\n' "$title" > "$dir/responses/3.out"
+  # 4: list-panes --json -> the new tab's terminal pane
+  printf '[{"id":7,"tab_id":3,"is_plugin":false}]\n' > "$dir/responses/4.out"
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate fm-newtask /tmp/proj' "$ROOT" )
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate "$1" /tmp/proj' "$ROOT" "$title" )
   [ "$out" = "3 7" ] || fail "create_task should echo '<tab_id> <pane_id>', got '$out'"
   assert_contains "$(cat "$dir/log")" $'\x1f''new-tab'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--name'$'\x1f'"$title" \
-    "create_task did not call new-tab with the right cwd/home-scoped name"
-  pass "fm_backend_zellij_create_task: creates a home-scoped tab and parses tab_id/pane_id from the response"
+    "create_task did not use the exact semantic task id as its visible name"
+  pass "fm_backend_zellij_create_task: creates an exact semantic tab and preserves task-date digits"
+}
+
+test_create_task_keeps_secondmate_title_unchanged() {
+  local dir fb out title
+  dir="$TMP_ROOT/create-secondmate"; mkdir -p "$dir/responses"
+  title=$(zellij_expected_scoped_title fm-domain)
+  printf '[]\n' > "$dir/responses/1.out"
+  printf '6\n' > "$dir/responses/2.out"
+  printf '[{"tab_id":6,"name":"%s","active":true}]\n' "$title" > "$dir/responses/3.out"
+  printf '[{"id":12,"tab_id":6,"is_plugin":false}]\n' > "$dir/responses/4.out"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate fm-domain /tmp/proj secondmate' "$ROOT" )
+  [ "$out" = "6 12" ] || fail "secondmate create should echo IDs, got '$out'"
+  assert_contains "$(cat "$dir/log")" $'\x1f''new-tab'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--name'$'\x1f'"$title" \
+    "zellij secondmate title changed from its historical home-scoped identity"
+  pass "fm_backend_zellij_create_task: keeps secondmate visible naming unchanged"
 }
 
 test_create_task_restores_previously_active_tab() {
@@ -490,9 +554,11 @@ test_create_task_restores_previously_active_tab() {
   printf '[{"tab_id":0,"name":"Tab #1","active":true}]\n' > "$dir/responses/1.out"
   # 2: new-tab -> id 4 (this steals focus on the real CLI)
   printf '4\n' > "$dir/responses/2.out"
-  # 3: list-panes --json -> tab 4's terminal pane
-  printf '[{"id":9,"tab_id":4,"is_plugin":false}]\n' > "$dir/responses/3.out"
-  # 4: go-to-tab-by-id 0 (the restore call) - silent on success
+  # 3: post-create uniqueness check proves exactly our tab carries the title
+  printf '[{"tab_id":0,"name":"Tab #1","active":false},{"tab_id":4,"name":"fm-focustest","active":true}]\n' > "$dir/responses/3.out"
+  # 4: list-panes --json -> tab 4's terminal pane
+  printf '[{"id":9,"tab_id":4,"is_plugin":false}]\n' > "$dir/responses/4.out"
+  # 5: go-to-tab-by-id 0 (the restore call) - silent on success
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
@@ -509,7 +575,8 @@ test_create_task_no_restore_when_new_tab_was_already_active() {
   # No active tab at all (no client attached - the common unattended case)
   printf '[]\n' > "$dir/responses/1.out"
   printf '5\n' > "$dir/responses/2.out"
-  printf '[{"id":11,"tab_id":5,"is_plugin":false}]\n' > "$dir/responses/3.out"
+  printf '[{"tab_id":5,"name":"fm-noclient","active":true}]\n' > "$dir/responses/3.out"
+  printf '[{"id":11,"tab_id":5,"is_plugin":false}]\n' > "$dir/responses/4.out"
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
     FM_ZELLIJ_SESSION_LIST="firstmate" \
@@ -1027,6 +1094,7 @@ test_scoped_title_changes_with_root_path
 test_expected_label_accepts_unambiguous_untagged_legacy_tab
 test_expected_label_refuses_ambiguous_untagged_tab
 test_list_live_scopes_to_own_home_tag
+test_list_live_binds_semantic_title_to_recorded_ids
 test_resolve_bare_selector_prefers_scoped_title
 test_resolve_bare_selector_refuses_ambiguous_untagged
 test_resolve_bare_selector_prefers_later_session_scoped_title_over_legacy
@@ -1037,7 +1105,9 @@ test_server_ensure_skips_attach_when_already_exists
 test_dispatch_routes_zellij_backend
 test_dispatch_busy_state_unknown_for_zellij
 test_create_task_refuses_duplicate_label
+test_create_task_refuses_simultaneous_duplicate
 test_create_task_creates_and_parses_ids
+test_create_task_keeps_secondmate_title_unchanged
 test_create_task_restores_previously_active_tab
 test_create_task_no_restore_when_new_tab_was_already_active
 test_capture_small_reads_use_viewport_and_trim

@@ -56,11 +56,12 @@ A cmux spawn refuses loudly, with an actionable message pointing back to this do
 No first-run provisioning beyond the socket-access setup above and having `jq` installed; firstmate creates the workspace it needs on first spawn, launching the app itself (`open -a cmux`) if it is not already running.
 
 Watching and attaching: firstmate uses one workspace per task in whatever cmux window is currently open.
-Task selectors resolve through the shared contract owned by [`docs/configuration.md`](configuration.md) ("Runtime backend"), while the actual cmux workspace title is home-scoped as `fm-<home-label>-<id>`, for example `fm-firstmate-<8hex>-cmux-e2e-t1` in the primary home or `fm-2ndmate-<secondmate-id>-<8hex>-cmux-e2e-t1` in a secondmate home.
+Task selectors resolve through the shared contract owned by [`docs/configuration.md`](configuration.md) ("Runtime backend"), while an ordinary worker or scout workspace is titled exactly with its task id.
+cmux does not support secondmate spawns.
 You do not need to bring the window forward for routine supervision: from an active firstmate session, `bin/fm-peek.sh <id>` reads a task's surface without focusing it, and `FM_HOME=<this-firstmate-home> bin/fm-send.sh <id> "<text>"` steers it unless `FM_HOME` is already set to the active firstmate home - workspace/surface/pane creation all default `focus` to `false`, so an unattended spawn never steals your view.
 
 Verify it works by spawning a trivial task with `--backend cmux` and confirming the task's meta records `backend=cmux` plus `cmux_workspace_id=` and `cmux_surface_id=`.
-The cmux sidebar should show a new `fm-firstmate-<8hex>-<id>` workspace in the primary home.
+The cmux sidebar should show a new exact `<id>` workspace.
 
 Limitations: cmux is experimental, macOS-only, GUI-first (never viable for a headless/CI/SSH-only firstmate instance), has no native busy-state signal, and `--secondmate` spawns are refused until a per-home design exists - see "Known gaps left for a follow-up" at the end of this document.
 
@@ -141,22 +142,22 @@ The feasibility report searched cmux's source for a shipped git-worktree-owning 
 
 cmux's hierarchy is macOS window -> workspace (a vertical-tab entry, cmux's rough analogue of a herdr/zellij tab) -> surface (a pane/split within that workspace).
 There is no "session" concept to multiplex the way tmux/herdr/zellij have - there is just "the app" (one running GUI instance, optionally split across native macOS windows).
-firstmate uses **one cmux workspace per task**, keyed by the caller-facing `fm-<id>` label, with exactly one surface inside it - mirroring tmux's one-window-per-task and zellij's one-tab-per-task shape.
-The caller-facing task label stays `fm-<id>`, but the visible cmux workspace title is `fm-<home-label>-<id>`.
-The home label keeps the same readable identity as herdr's workspace split - `firstmate` for the primary home, or `2ndmate-<id>` when `$FM_HOME/.fm-secondmate-home` contains a secondmate id - and appends a short stable hash of the resolved `FM_ROOT` path.
-That yields labels like `firstmate-<8hex>` or `2ndmate-<id>-<8hex>`, making the visible workspace title `fm-firstmate-<8hex>-<id>` or `fm-2ndmate-<id>-<8hex>-<task>`.
-This was hardened in two captain-directed no-mistakes review gate follow-ups: first by adding the home tag for primary-vs-secondmate collisions, then by adding the `FM_ROOT` hash so two distinct primary installations cannot collide either.
-Physically moving or relocating a firstmate installation changes its tag, so workspaces titled under the old tag stop matching after a move.
-That is acceptable because a task's own recorded worktree path in `state/<id>.meta` does not survive a repo relocation either, so this is consistent with an existing, already accepted limitation, not a new one.
-There is still no per-home cmux container split (unlike herdr's later refinement); the home tag is a title discriminator only.
+firstmate uses **one cmux workspace per task**, titled with the validated task id and containing exactly one surface.
+cmux itself does not enforce title uniqueness, so creation checks both the exact new title and the old home-scoped compatibility title and refuses either collision.
+After creation it requires exactly one matching workspace before accepting an id, which closes the simultaneous precheck race without guessing which workspace belongs to this task.
+It never attaches to an occupied or ambiguous semantic title.
+New exact titles are bound to this home's recorded workspace and surface UUIDs for operation, listing, and cleanup.
+Because cmux workspace UUIDs change across an app relaunch, an exact title is not recovered by title alone when the old UUID disappears; that would be unable to prove whether another home's same-id task now owns it.
+The adapter stops safely instead.
+Old `fm-<home-label>-<id>` workspaces retain compatibility recovery through their deterministic home tag.
 
 ## Target string and meta fields
 
 A cmux task's `window=` meta field holds `<workspace_uuid>:<surface_uuid>`, for example `F28BB910-E42C-40F6-AC5C-D92635581EED:A3E9D3A8-BE1D-4055-A567-3525320D2ABF`.
 Both are bare UUIDs with no embedded colon, so splitting on the first colon is trivially correct (mirrors herdr's/zellij's target-string convention).
 The meta target is still the UUID pair, not the human title.
-The human title is reconstructed internally from the caller-facing `fm-<id>` label as `fm-<home-label>-<id>` whenever cmux needs to create, recover, or list a workspace.
-`<home-label>` includes the readable home prefix and the short `FM_ROOT` path hash described above.
+New metadata records the exact visible value as `session_name=<id>`.
+Old metadata without that field retains the historical `fm-<id>` expectation and old scoped-title compatibility.
 cmux tasks additionally record:
 
 - `cmux_workspace_id=` - the task's workspace UUID (same value as the `window=` field's first component).
@@ -170,9 +171,9 @@ No session field is needed - unlike herdr/zellij there is no session layer to re
 |---|---|---|
 | Version gate | `cmux version` -> `"cmux 0.64.17 (97) [9ed29d81a]"` | Works with NO socket connection at all - a pure client-version check, verified even while the socket was still rejecting connections. |
 | Reachability/auth gate | `cmux ping` -> `"PONG"` or a typed error | Classified into `ok`\|`denied`\|`unauth`\|`down`\|`error` from the error text (`fm_backend_cmux_ping_state`); `fm_backend_cmux_ensure_running` launches the app (`open -a cmux`) only for `down`, and fails fast with an actionable message for `denied`/`unauth` since relaunching cannot fix a configuration problem. |
-| Duplicate task check | `cmux workspace list --json --id-format uuids`, match by home-scoped `.title` | cmux enforces NO title uniqueness for workspaces OR surfaces/tabs - verified live: two workspaces, and two surfaces within one workspace, all created successfully sharing one title. The adapter's own duplicate check is required, mirroring herdr/zellij, and it checks the scoped title such as `fm-firstmate-<8hex>-<id>`. |
-| Create task workspace | `cmux new-workspace --name <scoped-title> --cwd <dir> --focus false --id-format uuids` | Creates a workspace with exactly one default surface. `--focus` verified to already default to `false` for workspace/surface/pane creation - no focus-restore dance needed, unlike zellij. The caller passes `fm-<id>`, but the adapter creates `fm-<home-label>-<id>`. |
-| Workspace/surface id resolution | `cmux workspace list --json --id-format uuids` (find by home-scoped title), then `cmux list-panes --workspace <id> --json --id-format uuids` (`.panes[0].selected_surface_id`) | A freshly created workspace already has exactly one surface, so no separate `new-surface` call is needed. `--id-format uuids` (or `both`) is required to get a bare `id` field in JSON; the default JSON shape returns only short `ref` strings like `"workspace:2"`. |
+| Duplicate task check | `cmux workspace list --json --id-format uuids`, match exact and compatibility titles | cmux enforces no uniqueness, so the adapter refuses either collision before creation. |
+| Create task workspace | `cmux new-workspace --name <id> --cwd <dir> --focus false --id-format uuids` | Creates one workspace with one default surface and the exact semantic task id. |
+| Workspace/surface id resolution | `cmux workspace list --json --id-format uuids` (find exact title immediately after creation), then `cmux list-panes --workspace <id> --json --id-format uuids` | A freshly created workspace already has one surface; `--id-format uuids` is required for bare UUIDs. |
 | Liveness / target readiness | `cmux list-panes --workspace <id> --json --id-format uuids`, checking the surface id appears in `.panes[].surface_ids` | Structural existence check, NOT a content read - see "read-screen fails on a genuinely fresh surface" below for why `read-screen` cannot be used here. Verified reliable on a completely untouched fresh surface, unlike `read-screen`. |
 | Send literal (unsubmitted) | `cmux send --workspace <id> --surface <id> -- <text>` | Verified live: does NOT auto-submit - text sits at the prompt, unexecuted, until a separate Enter. Matches every other backend's "literal-then-separate-Enter" contract. The `--` separator keeps option-shaped text such as `--help` literal. |
 | Send key | `cmux send-key --workspace <id> --surface <id> <key>` | Verified names: `enter`, `escape`, `ctrl-c` all work directly (lowercase, hyphenated). Escape is natively supported (unlike Orca); Ctrl-C correctly interrupted a running `sleep 100` in a live test. cmux's own key vocabulary is richer still (`ctrl-d`/`ctrl-z`/`ctrl-\\`, semantic aliases `sigint`/`sigtstp`/`sigquit`), but firstmate's shared vocabulary only needs these three today. |
@@ -181,7 +182,28 @@ No session field is needed - unlike herdr/zellij there is no session layer to re
 | Worktree-path discovery | marked active cwd probe + capture-scrape (`fm_backend_cmux_current_path`), NOT `current_directory` | `current_directory` DOES reflect a `cd` run directly in the surface's own top-level shell, but stays FROZEN at wherever that shell was when it launched a foreground subshell (exactly what `treehouse get` does) - zellij-shape, not herdr-shape. See "Worktree-path discovery: current_directory does not track a subshell" below. |
 | Busy state | *(no native primitive)* | cmux has agent-awareness elsewhere (Claude Code hooks integration, session-resume tokens) but exposes nothing over the socket API for generic busy/idle classification; `surface.health`/`surface-health` is render health, not agent status. `fm_backend_busy_state`'s dispatcher (`bin/fm-backend.sh`) falls through to `unknown` for cmux via its wildcard case, exactly like tmux/zellij/Orca - the watcher's existing pane-hash + regex path is the only busy-state source for this backend. |
 | Kill | `cmux close-workspace --workspace <id>`, preceded by a throwaway `new-workspace --window <win> --focus false --id-format uuids` when the target is the only workspace in its window | See "Closing the last workspace in a window" below. The backend owns the whole task workspace; kill closes it best-effort (`\|\| true`), but cmux silently refuses to close the LAST workspace in a window, so kill first detects that case (`fm_backend_cmux_window_of_workspace`) and adds a throwaway sibling before closing, matching every other backend's `kill` contract. |
-| Recovery / list-live | `cmux workspace list --json --id-format uuids`, filter titles starting with this home's `fm-<home-label>-`, then `list-panes` per match for the surface id | Title-based, never trusts a stored workspace uuid blindly - ids do NOT survive an app relaunch (see "Workspace ids do not survive a relaunch" below), so this is the only safe recovery posture. The adapter prints the plain `fm-<id>` label back to callers after stripping the readable home tag and `FM_ROOT` hash. |
+| Recovery / list-live | `cmux workspace list --json --id-format uuids`, exact metadata workspace/surface UUID and title binding plus compatibility-prefix scan | Exact titles are never recovered by title alone after UUID loss; old scoped titles retain deterministic compatibility recovery. |
+
+## Semantic-name verification (2026-07-23)
+
+The installed adapter evidence remains cmux 0.64.17 build 97.
+The portable fake-CLI suite exercised exact creation, duplicate refusal, target verification, cleanup, and legacy recovery:
+
+```text
+$ tests/fm-backend-cmux.test.sh
+ok - fm_backend_cmux_create_task: refuses cross-task attachment to a duplicate semantic title
+ok - fm_backend_cmux_create_task: creates an exact semantic workspace and preserves task-date digits
+ok - fm_backend_cmux_create_task: simultaneous same-title creation refuses without cross-task attachment
+```
+
+The create assertion recorded this exact argument:
+
+```text
+new-workspace --name lab-arena-carlos-booking-context-loss-fix-20260723 --cwd /tmp/proj --focus false --id-format uuids
+```
+
+The live cmux app was not driven for this naming-only verification because it is one shared GUI instance rather than an isolatable session.
+The existing real 0.64.17 evidence below remains authoritative for CLI shape, lack of title uniqueness, UUID behavior, and cleanup mechanics.
 
 ## Socket control modes: the full matrix (default `cmuxOnly` rejects external CLIs)
 
@@ -310,9 +332,9 @@ Per this task's explicit instruction NOT to relaunch the captain's app just to t
 This differs from surfaces, whose analogous initializer DOES accept `restoredSurfaceId: UUID? = nil` and use `restoredSurfaceId ?? UUID()` - but tracing every call site of that parameter showed it is used only for same-run object-identity reuse (e.g. moving/splitting an already-live surface within the current app session), never threaded through any session-restore/relaunch code path.
 No `Workspace(...)` construction anywhere in the source passes a persisted id back in.
 
-Conclusion: workspace ids should be treated as NOT surviving an app relaunch or session restore, the same posture as herdr's/zellij's own id-instability caveats (for different underlying reasons in each case).
-`fm_backend_cmux_list_live` therefore does recovery/orphan discovery strictly by **title**, never by trusting a stored uuid, mirroring both prior adapters' recovery posture.
-Because cmux has one shared app namespace, the title lookup is scoped to this firstmate installation's `fm-<home-label>-` prefix and reported back to firstmate as the plain `fm-<id>` label.
+Conclusion: workspace ids should be treated as not surviving an app relaunch or session restore.
+For new exact semantic titles, losing that UUID also loses the proof that distinguishes this home's task from another home's same-id task, so recovery refuses rather than matching by title alone.
+Old home-scoped titles retain title-based compatibility recovery because their installation tag still proves ownership.
 No live app restart was performed to empirically confirm this beyond the source read - the two live app restarts that did occur during this build (documented in the "Socket control modes" section above) were solely to apply the one-time `socketControlMode`/password configuration change, not to test id persistence, and the app held no captain-owned workspaces at either restart (verified: it had just been freshly launched moments before, with only the default auto-created workspace present).
 
 ## CLI is not on PATH by default (unanticipated finding)

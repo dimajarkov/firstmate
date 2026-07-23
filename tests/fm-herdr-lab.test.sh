@@ -116,17 +116,36 @@ run_with_fake() {
 }
 
 test_refuses_unsafe_names() {
-  local status=0 generated
+  local status=0 generated repeated digits near_limit long_one long_two
   fm_herdr_lab_validate_name default >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "literal default must be refused"
   status=0
   fm_herdr_lab_validate_name arbitrary-session >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "non-lab prefix must be refused"
-  fm_herdr_lab_validate_name fm-lab-safe-123 || fail "valid lab session name was refused"
-  generated=$(fm_herdr_lab_name fm-autodetect-smoke-concurrency-h3)
+  fm_herdr_lab_validate_name lab-safe-123 || fail "valid lab session name was refused"
+  fm_herdr_lab_validate_name fm-lab-safe-123 || fail "legacy lab name needed for cleanup was refused"
+
+  generated=$(fm_herdr_lab_name arena-carlos-booking-context-loss-fix-20260723)
+  [ "$generated" = lab-arena-carlos-booking-context-loss-fix-20260723 ] \
+    || fail "reported task id did not produce its exact semantic lab name: $generated"
+  repeated=$(fm_herdr_lab_name arena-carlos-booking-context-loss-fix-20260723)
+  [ "$repeated" = "$generated" ] || fail "repeat generation changed the semantic session name"
+  case "$generated" in fm-*) fail "generated lab name retained the fm- owner prefix" ;; esac
+  case "$generated" in *-[0-9]*-[0-9]*) fail "generated lab name retained a pid/random suffix" ;; esac
+
+  digits=$(fm_herdr_lab_name parser-v2-20260723)
+  [ "$digits" = lab-parser-v2-20260723 ] || fail "meaningful task digits were stripped: $digits"
+  near_limit=$(fm_herdr_lab_name "$(printf 'a%.0s' {1..55})-20260723")
+  [ "${#near_limit}" -eq 50 ] || fail "64-character task id did not honor the deterministic Herdr session bound"
+  case "$near_limit" in *-20260723) : ;; *) fail "near-limit task date digits were stripped: $near_limit" ;; esac
+
+  long_one=$(fm_herdr_lab_name "$(printf 'z%.0s' {1..80})")
+  long_two=$(fm_herdr_lab_name "$(printf 'z%.0s' {1..80})")
+  [ "$long_one" = "$long_two" ] || fail "long-label shortening was not deterministic"
+  [ "${#long_one}" -eq 50 ] || fail "long-label shortening exceeded its deterministic bound: $long_one"
+  case "$long_one" in lab-??????????????-x-[a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z][a-z]-*) : ;; *) fail "long label lacks a nonnumeric deterministic disambiguator: $long_one" ;; esac
   fm_herdr_lab_validate_name "$generated" || fail "generated lab session name was refused"
-  [ "${#generated}" -le 40 ] || fail "generated lab session name is too long for Herdr socket paths: $generated"
-  pass "fm-herdr-lab: names fail closed and require the lab prefix"
+  pass "fm-herdr-lab: exact semantic names preserve digits, repeat deterministically, and bound long labels without numeric nonces"
 }
 
 test_provision_run_and_guarded_teardown() {

@@ -3,7 +3,7 @@
 #
 # Snapshot the session list before the real-Herdr suite, then at job end only
 # stop/delete sessions that:
-#   1. match the guarded fm-lab-* name pattern,
+#   1. match the guarded lab-* name pattern (or legacy fm-lab-*),
 #   2. were not present in the pre-suite snapshot (job-proven ownership),
 #   3. report default:false on a fresh session list.
 #
@@ -42,7 +42,8 @@ list_sessions_json() {
 
 is_lab_name() {
   local name=$1
-  [[ "$name" =~ ^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]
+  [[ "$name" =~ ^lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] \
+    || [[ "$name" =~ ^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]
 }
 
 case "$cmd" in
@@ -59,13 +60,13 @@ case "$cmd" in
     candidates=$(printf '%s' "$after_json" | jq -r --argjson before "$before" '
       .sessions[]?
       | select(.default == false)
-      | select(.name | test("^fm-lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
+      | select(.name | test("^(fm-)?lab-[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
       | select((.name as $n | $before | index($n) | not))
       | .name
     ')
     failed=0
     if [ -z "$candidates" ]; then
-      log "no job-owned fm-lab-* sessions to clean"
+      log "no job-owned lab sessions to clean"
       exit 0
     fi
     while IFS= read -r name; do

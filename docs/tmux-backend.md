@@ -44,11 +44,12 @@ tmux attach -t firstmate
 
 ## Watching and typing into crew windows
 
-Once attached, each crewmate is its own window named `fm-<id>`:
+Once attached, each ordinary worker or scout is its own window named exactly `<id>`.
+Secondmate window naming remains unchanged.
 
 ```sh
-tmux list-windows -t <session-name>          # see every crew window
-tmux select-window -t <session-name>:fm-<id> # jump to one, or use ctrl-b <n>
+tmux list-windows -t <session-name>       # see every crew window
+tmux select-window -t <session-name>:<id> # jump to one, or use ctrl-b <n>
 ```
 
 Use the current tmux session name when firstmate was launched inside tmux; use `firstmate` only for the detached outside-tmux path.
@@ -64,7 +65,24 @@ tmux list-windows -t <session-name>
 ```
 
 Use the current tmux session name for the run-inside-tmux path, or `firstmate` for the detached outside-tmux path.
-You should see a `fm-<id>` window for the task, live and updating as the crewmate works.
+You should see an exact `<id>` window for the task, live and updating as the worker proceeds.
+
+## Visible worker and scout names (2026-07-23)
+
+`bin/fm-spawn.sh` now passes the validated task id unchanged to `tmux new-window -n` for ordinary workers and scouts.
+The durable metadata records that exact value as `session_name=<id>`, while old metadata without `session_name=` continues to expect its historical `fm-<id>` window.
+A duplicate exact name in the same tmux session is refused before creation, and the stable window id plus pinned rename options continue to protect targeting and cleanup.
+Task ids are limited to 64 characters by `fm_task_id_creation_valid`, so meaningful terminal digits and dates survive unchanged at the name boundary.
+
+The real tmux binary was not installed in the verification environment, so no live tmux claim is made for this change.
+The production-shaped recording test exercised worker and scout spawns through `fm-spawn.sh`:
+
+```text
+$ tests/fm-backend.test.sh
+ok - fm-spawn.sh: tmux workers and scouts use exact semantic names while default backend metadata remains compatible
+```
+
+The same test records `new-window ... -n <id>`, rejects a generated `-n fm-<id>` argument, preserves a 64-character scout id ending in `20260723`, and verifies the new metadata field.
 
 ## Agent liveness probe
 

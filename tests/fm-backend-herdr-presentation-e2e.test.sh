@@ -111,6 +111,21 @@ arg_value() {
 }
 
 label=$(arg_value --label "$@" || true)
+# The production spawn path now verifies the exact pane shell with pane run,
+# rather than trusting foreground_cwd from pane get. Keep the post-create abort
+# fixture aligned with that end-user path by making only its exact task pane
+# report a non-worktree cwd through the real probe command.
+if [ "${1:-} ${2:-}" = "pane run" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    wrong_cwd=$(printf '%q' "$POST_CREATE_ABORT_CONTROL/not-a-worktree")
+    probe=${4:-}
+    probe=${probe/pwd -P/printf '%s\\n' $wrong_cwd}
+    set -- "$1" "$2" "$3" "$probe" "${@:5}"
+    break
+  done
+fi
 if [ "${1:-} ${2:-}" = "workspace list" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ]; then
   stage=$(cat "$ACTIVE_SEEDED_CONTROL/stage" 2>/dev/null || true)
   if [ "$stage" = task-created ]; then
@@ -164,11 +179,11 @@ if [ "$status" -eq 0 ] && [ "$mutation" = workspace-create ]; then
 fi
 if [ "$status" -eq 0 ] && [ "$mutation" = tab-create ]; then
   case "$label" in
-    fm-active-seeded)
+    active-seeded)
       printf '%s\n' "$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id')" > "$ACTIVE_SEEDED_CONTROL/task-pane"
       printf '%s\n' task-created > "$ACTIVE_SEEDED_CONTROL/stage"
       ;;
-    fm-abort-a|fm-abort-b)
+    abort-a|abort-b)
       task=${label#fm-}
       mkdir -p "$POST_CREATE_ABORT_CONTROL/$task"
       printf '%s\n' "$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id')" > "$POST_CREATE_ABORT_CONTROL/$task/task-pane"
@@ -545,8 +560,8 @@ PROJECTED_PANES=$(lab pane list --workspace "$PROJECTED_WSID")
 [ "$(printf '%s' "$PROJECTED_PANES" | jq -r '.result.panes | length')" = 1 ] \
   || fail "projected workspace did not contain exactly one task pane"
 printf '%s' "$PROJECTED_TABS" | jq -e --arg tab "$PROJECTED_TAB" \
-  '.result.tabs[0].tab_id == $tab and .result.tabs[0].label == "fm-shape"' >/dev/null 2>&1 \
-  || fail "projected workspace's only tab was not the normal fm-shape task tab"
+  '.result.tabs[0].tab_id == $tab and .result.tabs[0].label == "shape"' >/dev/null 2>&1 \
+  || fail "projected workspace's only tab was not the exact semantic task-id tab"
 printf '%s' "$PROJECTED_PANES" | jq -e --arg pane "$PROJECTED_PANE" \
   '.result.panes[0].pane_id == $pane' >/dev/null 2>&1 \
   || fail "projected workspace's only pane was not the exact recorded task pane"

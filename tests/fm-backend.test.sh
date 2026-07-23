@@ -522,8 +522,8 @@ test_resolve_selector_three_forms() {
   local state=$TMP_ROOT/resolve-state fakebin out
   mkdir -p "$state"
   fm_write_meta "$state/task1.meta" "window=firstmate:fm-task1"
-  fm_write_meta "$state/dotfiles-d6.meta" "window=default:wA:p2" "backend=herdr"
-  fm_write_meta "$state/fm-turnend-all-harnesses-v9.meta" "window=default:wB:p3" "backend=herdr"
+  fm_write_meta "$state/dotfiles-d6.meta" "window=default:wA:p2" "backend=herdr" "session_name=dotfiles-d6"
+  fm_write_meta "$state/fm-turnend-all-harnesses-v9.meta" "window=default:wB:p3" "backend=herdr" "session_name=fm-turnend-all-harnesses-v9"
 
   [ "$(fm_backend_resolve_selector 'sess:win' "$state")" = "sess:win" ] \
     || fail "explicit session:window should be used as-is"
@@ -532,15 +532,15 @@ test_resolve_selector_three_forms() {
     || fail "bare non-fm task id should resolve through exact metadata"
   [ "$(fm_backend_of_selector 'dotfiles-d6' 'default:wA:p2' "$state")" = herdr ] \
     || fail "bare non-fm task id should use its recorded backend"
-  [ "$(fm_backend_expected_label_of_selector 'dotfiles-d6' "$state")" = "fm-dotfiles-d6" ] \
-    || fail "bare non-fm task id should report the spawned fm-<id> label"
+  [ "$(fm_backend_expected_label_of_selector 'dotfiles-d6' "$state")" = "dotfiles-d6" ] \
+    || fail "new metadata should report the exact semantic session name"
 
   [ "$(fm_backend_resolve_selector 'fm-turnend-all-harnesses-v9' "$state")" = "default:wB:p3" ] \
     || fail "exact fm-* task id should resolve through its exact metadata"
   [ "$(fm_backend_of_selector 'fm-turnend-all-harnesses-v9' 'default:wB:p3' "$state")" = herdr ] \
     || fail "exact fm-* task id should use exact metadata without stripping fm-"
-  [ "$(fm_backend_expected_label_of_selector 'fm-turnend-all-harnesses-v9' "$state")" = "fm-fm-turnend-all-harnesses-v9" ] \
-    || fail "exact fm-* task id should report the spawned fm-<id> label"
+  [ "$(fm_backend_expected_label_of_selector 'fm-turnend-all-harnesses-v9' "$state")" = "fm-turnend-all-harnesses-v9" ] \
+    || fail "task ids that meaningfully begin with fm- must not be stripped or doubled"
 
   [ "$(fm_backend_resolve_selector 'fm-task1' "$state")" = "firstmate:fm-task1" ] \
     || fail "legacy fm-<id> label should resolve through <id>.meta's window="
@@ -996,26 +996,47 @@ test_spawn_refuses_unknown_fm_backend_env() {
 }
 
 test_spawn_default_backend_writes_no_meta_field() {
-  local proj wt data id state config out
+  local proj wt data id scout_id state config out log fb
   proj="$TMP_ROOT/nobackend-project"; wt="$TMP_ROOT/nobackend-wt"; data="$TMP_ROOT/nobackend-data"
-  id="nobackendz3"
+  id="lab-arena-carlos-booking-context-loss-fix-20260723"
+  scout_id="$(printf 's%.0s' {1..55})-20260723"
   fm_git_worktree "$proj" "$wt" "fm/$id"
-  local fb
   fb=$(make_spawn_fakebin "$TMP_ROOT/nobackend-fake" "$wt")
-  mkdir -p "$data/$id"; printf 'brief\n' > "$data/$id/brief.md"
+  mkdir -p "$data/$id" "$data/$scout_id"
+  printf 'brief\n' > "$data/$id/brief.md"
+  printf 'scout brief\n' > "$data/$scout_id/brief.md"
   state="$TMP_ROOT/nobackend-state"; config="$TMP_ROOT/nobackend-config"
   mkdir -p "$state" "$config"
+  log="$TMP_ROOT/nobackend.log"
 
   out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_TMUX_LOG="$TMP_ROOT/nobackend.log" \
+    FM_TMUX_LOG="$log" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend tmux 2>&1)
   expect_code 0 $? "explicit --backend tmux should spawn successfully"$'\n'"$out"
   assert_no_grep 'backend=' "$state/$id.meta" \
     "an explicit --backend tmux (the default) must not write backend= to meta (P1 compatibility contract)"
-  rm -rf "/tmp/fm-$id"
-  pass "fm-spawn.sh: an explicit --backend tmux resolves silently and writes no backend= (missing means tmux)"
+  assert_grep "session_name=$id" "$state/$id.meta" "ordinary worker metadata did not record its exact semantic session name"
+  assert_contains "$(cat "$log")" $'tmux\x1fnew-window\x1f-dP\x1f-F\x1f#{window_id}\x1f-t\x1ffirstmate:\x1f-n\x1f'"$id" \
+    "tmux ordinary worker window did not use the exact task id"
+  assert_not_contains "$(cat "$log")" $'\x1f-n\x1ffm-'"$id" \
+    "tmux ordinary worker window retained a generated fm- prefix"
+
+  : > "$log"
+  out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
+    FM_TMUX_LOG="$log" \
+    "$ROOT/bin/fm-spawn.sh" "$scout_id" "$proj" claude --backend tmux --scout 2>&1)
+  expect_code 0 $? "explicit --backend tmux scout should spawn successfully"$'\n'"$out"
+  assert_grep "session_name=$scout_id" "$state/$scout_id.meta" "scout metadata did not record its exact semantic session name"
+  assert_contains "$(cat "$log")" $'\x1f-n\x1f'"$scout_id" \
+    "tmux scout window did not use the exact task id with date digits intact"
+  assert_not_contains "$(cat "$log")" $'\x1f-n\x1ffm-'"$scout_id" \
+    "tmux scout window retained a generated fm- prefix"
+  rm -rf "/tmp/fm-$id" "/tmp/fm-$scout_id"
+  pass "fm-spawn.sh: tmux workers and scouts use exact semantic names while default backend metadata remains compatible"
 }
 
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env() {

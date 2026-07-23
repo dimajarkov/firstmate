@@ -38,7 +38,8 @@ For `--secondmate` launches, secondmate home sync and inherited local-material p
 
 No first-run provisioning is needed beyond having `herdr` and `jq` on `PATH`; firstmate creates the workspace and tab it needs on first spawn.
 
-Watching and attaching: by default, each firstmate home gets its own herdr workspace (the primary uses `firstmate`; each secondmate uses `2ndmate-<secondmate-id>`), with one tab per task inside it, named `fm-<id>`.
+Watching and attaching: by default, each firstmate home gets its own herdr workspace (the primary uses `firstmate`; each secondmate uses `2ndmate-<secondmate-id>`), with one tab per task inside it.
+Ordinary worker and scout tabs are named exactly `<id>`; secondmate naming remains unchanged.
 With the optional projection disabled, attach to the selected `HERDR_SESSION` and switch to the workspace for the home you want to watch to see every one of that home's tasks as tabs in one tab bar.
 You do not need to attach for routine supervision: from an active firstmate session, `bin/fm-peek.sh fm-<id>` reads a task's pane without attaching, and `FM_HOME=<this-firstmate-home> bin/fm-send.sh fm-<id> "<text>"` steers it unless `FM_HOME` is already set to the active firstmate home.
 
@@ -48,7 +49,7 @@ Every newly projected child created by a primary or secondmate home is inserted 
 Unavailable or failed ordering warns and leaves the successfully created worker running in Herdr's current order.
 See "Optional disposable single-task presentation spaces" below before enabling it.
 
-Verify it works by spawning a trivial task with `--backend herdr` and confirming the task's meta records `backend=herdr` plus `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`; the selected Herdr workspace should show the new `fm-<id>` tab.
+Verify it works by spawning a trivial task with `--backend herdr` and confirming the task's meta records `backend=herdr`, `session_name=<id>`, `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`; the selected Herdr workspace should show the exact `<id>` tab.
 
 Limitations: herdr is experimental and still carries the open gaps documented below.
 Resolved backend evidence, including the 2026-07-06 symlinked-project-prefix isolation fix, is kept in the same follow-up log for auditability.
@@ -147,7 +148,7 @@ Teardown (`fm_backend_herdr_kill`) closes only the task's pane/tab, never the wo
 
 Create the local, gitignored `config/herdr-presentation-spaces` file on the primary home to enable the presentation projection.
 The primary's literal presence or absence converges to registered secondmate homes through the same launch, bootstrap, and config-push inheritance owner as the other declared inheritable config items.
-An absent file is off, and the off path runs the existing home-workspace and `fm-<id>`-tab command sequence unchanged.
+An absent file is off, and the off path uses the existing home workspace with the exact semantic task-id tab.
 A home that has not yet converged stays flat rather than gaining partial projection authority.
 This is a visual convenience, not a task container authority, lifecycle foundation, or durable grouping guarantee.
 The `kind=secondmate` agent itself always uses its ordinary `2ndmate-<id>` parent workspace and never receives a corner projection; only eligible crewmates and scouts launched by that home project beneath it.
@@ -159,10 +160,10 @@ It records that a visual projection was attempted and never selects or authorize
 
 The new workspace is created with the normal project cwd, `--no-focus`, and a visible label such as `└ release-notes · p:AbCdEfGhIjKlMnOpQrStUv`.
 Every newly created child uses the literal U+2514 `└`, one space, the concise task label with redundant `firstmate/`, `2ndmate-<id>/`, and presentation-level `fm-` owner prefixes removed, then the unchanged ` · p:<full-22-character-token>` suffix.
-The ordinary task tab remains `fm-<id>` and is unchanged.
+The ordinary task tab uses the exact semantic task id, matching the flat layout.
 The full token is intentionally visible because Herdr has no verified persistent hidden field suitable for this non-adversarial correlator.
 The create response's exact workspace, seeded tab, and root pane IDs are retained only in the spawning process.
-The normal `fm-<id>` tab is created in that exact workspace, and only the exact seeded tab from the same workspace-create response is eligible for pruning.
+The normal exact task-id tab is created in that exact workspace, and only the exact seeded tab from the same workspace-create response is eligible for pruning.
 The projected create refuses success unless the workspace converges to exactly one tab and one pane, both matching the new task response.
 There is no log or placeholder tab because retaining one would keep the workspace alive after the task pane closes.
 Immediately before and after projected workspace create, task-tab create, seeded-tab prune, workspace move, abort cleanup, and normal cleanup, Firstmate verifies one exact active workspace id and active tab id.
@@ -342,7 +343,7 @@ Herdr tasks additionally record:
 | Default-tab prune (create_task, first task in a fresh workspace only) | `herdr workspace create`'s own response (`.result.tab.tab_id`) identifies the seeded tab; `herdr tab list` + `herdr agent get <pane>` re-verify it; `herdr pane close <pane>` closes exactly that tab id | `herdr workspace create` seeds the new workspace with one auto-created default tab (label `1`, id captured straight from the create response) firstmate never uses. `fm_backend_herdr_create_task` closes EXACTLY that captured tab id right after creating the first real task tab in a freshly created workspace - never right after `workspace create` itself (see Kill row), and never re-derived from a tab's label or the workspace's tab count at create_task time (see "Default-tab prune" above for the created-vs-adopted safety gate and the 2026-07-02 incident it fixes). Best-effort; an ADOPTED workspace (not freshly created by this same call) is never a prune candidate at all. |
 | Presentation workspace ordering | Raw protocol-16 `workspace.move` with `{workspace_id, insert_index}` over the exact named session socket | Herdr 0.7.4 exposes the method and zero-based `WorkspaceMoveParams.insert_index` in `herdr api schema` but has no `herdr workspace move` CLI subcommand, while moving the exact newly created workspace returns the full `workspace_list`, preserves focus and every other workspace's relative order, and is never used for recovery, ownership, adoption, or cleanup. The surrounding projection guard captures and verifies the exact active workspace and tab anyway. |
 | Presentation cleanup focus | `herdr pane close <exact-projection-pane>`, followed only when needed by `herdr tab focus <exact-prior-tab>` | Herdr 0.7.4 can move focus to a neighboring workspace when closing a non-focused workspace's last pane. Firstmate serializes projected cleanup, refuses to close the active tab, and restores only the exact response-derived pre-close tab id. No label, order, or projection token is restoration authority. |
-| Recovery / list-live | `herdr tab list --workspace <id>`, filter labels starting with `fm-` | Label-based, never trusts a stored id blindly - see "ID stability" below. `<id>` is always THIS home's own workspace (`fm_backend_herdr_workspace_find`), so recovery never sees a sibling home's tabs. |
+| Recovery / list-live | `herdr tab list --workspace <id>`, then match legacy `fm-*` labels or exact labels bound by this home's `session_name=`, `herdr_tab_id=`, and `herdr_pane_id=` metadata | Exact semantic labels are never adopted by shape alone or after recorded identity is lost. `<id>` is always THIS home's own workspace (`fm_backend_herdr_workspace_find`), so recovery never sees a sibling home's tabs. |
 | Workspace create / tab create (focus) | `herdr workspace create --no-focus`, `herdr tab create --no-focus` | Verified: neither focuses by default once a workspace already exists in the session, matching pre-P3 (flagless) behavior; `--no-focus` is passed anyway for defense in depth, since the very first workspace ever created in a brand-new session focuses regardless of the flag. `--focus` was separately verified to reliably focus, confirming the flag has real effect. |
 | Session targeting for DESTRUCTIVE calls | `herdr session stop <name> --session <name> --json`, then `herdr session delete <name> --session <name> --json`; never `herdr server stop` | Owned by `bin/fm-herdr-lab.sh` (which `tests/herdr-test-safety.sh` sources), re-querying `herdr session list --json` before every destructive call. See "Session targeting" below - `HERDR_SESSION` alone is not reliably honored once another herdr server is already running on the machine. |
 
@@ -578,7 +579,13 @@ The fix, verified against the real binary in an isolated session (both a genuine
 - For destructive session cleanup specifically, use `herdr session stop <name>` / `herdr session delete <name>` (the explicit-by-name forms - `<name>` is a REQUIRED positional argument, so herdr cannot resolve it ambiguously; herdr's own help text requires literally typing `default` to affect the default session), never the ambient `herdr server stop`. `bin/fm-herdr-lab.sh` now owns this guard as the single source of truth: `fm_herdr_lab_teardown` does the stop-then-delete, gated by a read-only hard guard (`fm_herdr_lab_refuse_if_default`, re-querying `herdr session list --json` immediately before EVERY stop/delete call, refusing on a literal `default` name, a not-found name, or `default:true`) as a second, independent layer that fails closed on any ambiguity. `tests/herdr-test-safety.sh` now sources that helper, so its `herdr_safe_stop_and_delete`/`herdr_refuse_if_default` names are thin delegating wrappers over the same owner.
 
 The same guard is now a first-class production helper, `bin/fm-herdr-lab.sh`, not just test scaffolding.
-It provisions an isolated never-`default` lab session (names must start with `fm-lab-`), runs every task command through `run <session> ...` with a mandatory trailing `--session` appended, and refuses caller-supplied `--session`, any leading option before the subcommand, and every server or session-lifecycle subcommand.
+It provisions an isolated never-`default` lab session.
+New generated names are deterministic `lab-<task-id>` values with no process or random suffix; legacy `fm-lab-*` names remain accepted only so in-flight labs can be stopped and deleted safely.
+The complete reported 46-character task id remains intact in the 50-character `lab-` session name.
+Longer labels are bounded to 50 characters by retaining their semantic prefix and final 12 characters, including task-date suffixes, around a letter-only 64-bit digest rather than a numeric nonce.
+For optional presentation ordering on macOS, `bin/backends/herdr-workspace-move.py` retries an overlong canonical AF_UNIX path through a private short symlink to the same verified socket, preserving the exact visible session name and server identity.
+Provisioning refuses an already-running exact name unless the existing guarded ownership record proves it is the same lab, so repeat attempts cannot attach to another task.
+The helper runs every task command through `run <session> ...` with a mandatory trailing `--session` appended, and refuses caller-supplied `--session`, any leading option before the subcommand, and every server or session-lifecycle subcommand.
 Destructive teardown goes only through `teardown <session>` (or a deliberate mid-run `stop <session>`), each re-running the refuse-default check immediately before every stop and delete.
 It also adds a before/after fleet-state tripwire: `provision` records every pre-existing session except the owned lab before creating it, and `stop` plus `teardown` verify that canonical record before destructive calls and after cleanup.
 The tripwire requires one unambiguous session named `default`, but preserves its observed running or stopped state instead of requiring it to be running.
@@ -630,6 +637,53 @@ TRIPWIRE=absent
 TEARDOWN=guarded-success
 PROTECTED_FLEET=byte-identical
 ```
+
+### Semantic task-name diagnosis and verification (2026-07-23)
+
+The end-user reproduction began with the deployed lab task id `lab-arena-carlos-booking-context-loss-fix-20260723-20620-24682` and the ordinary-worker spawn path.
+The expected visible name was the semantic `lab-arena-carlos-booking-context-loss-fix-20260723`; the observed Herdr tab was `fm-lab-arena-carlos-booking-context-loss-fix-20260723-20620-24682`.
+The setup used a named non-default Herdr lab and the real `fm-spawn.sh` to adapter path, and repeated deployments reproduced the same prefix-and-numeric-suffix shape because each launch applied both additions.
+
+The initiating naming rule was `W="fm-$ID"` in `fm-spawn.sh`.
+The independent suffix producer was `fm_herdr_lab_name`, which appended the shell process id and `$RANDOM` to make lab names unique.
+The masking condition was any non-lab task id, where the same `fm-` rule remained visible but the generated lab nonce was absent.
+Herdr's adapter passed `W` unchanged as `tab create --label`; it did not add another display transformation.
+The visible symptom was therefore the composition of two producers rather than a Herdr UI rewrite.
+
+History explains both additions.
+Commit `4bc0824` introduced the guarded lab helper with `fm-lab-<label>-<pid>-<random>` for ownership and collision isolation, while the original `W="fm-$ID"` line predates the backend adapters.
+Commit `85643ee` later capped the helper's semantic label at 16 characters specifically to keep generated socket paths short, not because task identity required the process and random suffix.
+The proven path was a direct adapter create with a caller-supplied semantic label, which Herdr displayed byte-for-byte.
+The smallest counterfactual changed only the caller label from the composed old value to the semantic id; the visible tab changed by exactly the removed prefix and nonce.
+A disconfirming check looked for a backend-added suffix by reading the created tab back from Herdr; none appeared, and meaningful terminal digits remained unchanged.
+The regression suite now composes the exact reported base as `lab-arena-carlos-booking-context-loss-fix-20260723`, covers repeated generation, and keeps secondmate naming unchanged.
+
+Verified with Herdr 0.7.4, protocol 16, on macOS.
+The live check used the required guarded helper at `/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/4/firstmate/bin/fm-herdr-lab.sh` for provisioning, every Herdr command, and teardown.
+A PATH shim removed only the adapter's already-matching trailing session arguments and routed each operation back through `fm-herdr-lab.sh run`.
+The exact command shape for the affected create was:
+
+```sh
+VISIBLE=arena-carlos-booking-context-loss-fix-20260723
+PATH="$LAB_SHIM:$PATH" FM_HOME="$LAB_HOME" HERDR_SESSION="$HERDR_LAB_SESSION" \
+  bash -c '. "$1/bin/backends/herdr.sh"; fm_backend_herdr_create_task "$2:$3" "$4" "$1" "$5"' \
+  _ "$PWD" "$HERDR_LAB_SESSION" "$WORKSPACE" "$VISIBLE" "$SEEDED_TAB"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" tab get "$TAB"
+```
+
+Exact output:
+
+```text
+HERDR_LAB_SESSION=fm-lab-fix-short-crewma-90270-14464
+TASK_IDS=w1:t2 w1:p2
+{"tab_id":"w1:t2","label":"arena-carlos-booking-context-loss-fix-20260723","workspace_id":"w1"}
+{"pane_id":"w1:p2"}
+{"version":"0.7.4","protocol":16}
+```
+
+The outer lab name is legacy because the task's hard safety contract required the already-deployed helper path for this verification.
+The changed deterministic `lab-arena-carlos-booking-context-loss-fix-20260723` generator is covered without lifecycle side effects by `tests/fm-herdr-lab.test.sh`.
+That suite also covers repeat generation, meaningful trailing digits, deterministic shortening of a 64-character near-limit id to the 50-character Herdr session bound while retaining its date suffix, protected-session drift, guarded cleanup, and failed cleanup retry.
 
 ## ID stability across a server restart
 

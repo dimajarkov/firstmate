@@ -22,8 +22,10 @@ Exit status:
 """
 
 import json
+import os
 import socket
 import sys
+import tempfile
 import time
 
 
@@ -53,6 +55,41 @@ def _read_line(sock, deadline):
     return buffer.split(b"\n", 1)[0]
 
 
+def _connect_socket(socket_path):
+    """Connect directly, then through a private short symlink if needed.
+
+    macOS AF_UNIX paths are limited to 103 usable bytes, while Herdr can expose
+    a longer canonical socket path for a semantic named session. Connecting via
+    a filesystem symlink preserves the exact server identity without shortening
+    or changing the visible Herdr session name.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(CONNECT_TIMEOUT)
+    try:
+        sock.connect(socket_path)
+        return sock
+    except OSError:
+        sock.close()
+
+    temp_parent = "/tmp" if os.path.isdir("/tmp") else None
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="fm-herdr-socket-", dir=temp_parent
+        ) as temp_dir:
+            alias = os.path.join(temp_dir, "socket")
+            os.symlink(socket_path, alias)
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(CONNECT_TIMEOUT)
+            sock.connect(alias)
+            return sock
+    except OSError:
+        try:
+            sock.close()
+        except UnboundLocalError:
+            pass
+        return None
+
+
 def main(argv):
     if len(argv) != 4:
         return 2
@@ -68,11 +105,8 @@ def main(argv):
     if insert_index < 0 or str(insert_index) != raw_index:
         return 2
 
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(CONNECT_TIMEOUT)
-        sock.connect(socket_path)
-    except OSError:
+    sock = _connect_socket(socket_path)
+    if sock is None:
         return 2
 
     request = {
