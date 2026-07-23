@@ -638,9 +638,100 @@ Beyond the fake-CLI unit tests (`tests/fm-backend-herdr.test.sh`) and the real-C
 Two real, non-obvious bugs were caught and fixed by this pass alone, both already reflected above and in `bin/backends/herdr.sh`:
 
 - The `pane read --lines N` small-N bug (see above) - without the fix, this E2E run flaked intermittently on the very first `send_text_line` call.
-- `pane get`'s `.result.pane.cwd` field is frozen at pane-creation time and never updates; `fm_backend_herdr_current_path` originally read it and would have made `fm-spawn.sh`'s worktree-discovery poll misresolve the acquired treehouse worktree path (it would see the pane's ORIGINAL directory, not where `treehouse get`'s subshell actually landed) - fixed by reading `.result.pane.foreground_cwd` instead, which tracks the live running process.
+- `pane get`'s `.result.pane.cwd` field is frozen at pane-creation time, so the initial adapter switched to `.result.pane.foreground_cwd`; the 2026-07-23 containment verification below proved that neither metadata field is sufficient authority and replaced both with exact-pane shell probes.
 
 The isolated herdr session, the treehouse pool worktree, and the scratch `FM_HOME` were all stopped/deleted/removed after this run, using the guarded teardown described in "Session targeting" above; the captain's default herdr session and the live tmux fleet were never touched at any point.
+
+## Spawn containment verification: pane-owned worktree path
+
+Verified on 2026-07-23 with Herdr client and server 0.7.4, protocol 16, Treehouse 2.1.0, Git 2.54.0, GNU Bash 3.2.57, and macOS 26.5.2 build 25F84.
+
+The operator-visible failure was a task whose metadata named one real Treehouse pool slot while the exact recorded Herdr pane settled in another real slot.
+The initiating trigger was the `treehouse get` foreground transition in the newly created task pane.
+The masking condition was a stale but valid pool path remaining unchanged for longer than the generic two-read interval.
+The visible symptom was `state/<id>.meta` making later cleanup target the stale slot even though the worker pane owned the actual slot.
+
+The pre-fix guarded lab reproduced that shape by making `treehouse get` enter `stale-slot`, hold that foreground cwd for four seconds, then enter an interactive shell in `actual-slot`.
+The same exact pane id appeared in metadata and in the final `pane get`, which disconfirmed wrong-pane addressing as the cause.
+Removing only the four-second hold made the prior implementation record `actual-slot`, which identified transition timing as the masking condition without changing the pane, project, or pool paths.
+Keeping the hold while replacing foreground metadata reads with exact-pane shell probes made metadata match `actual-slot`, which was the smallest causal counterfactual.
+
+The live run used the guarded non-default lab helper for lifecycle and every task-specific Herdr call.
+The lab-only `herdr` shim routed `fm-spawn` adapter calls back through `fm-herdr-lab.sh run` after verifying and removing the adapter's matching trailing session arguments.
+The tracked deterministic fixture in `tests/fm-spawn-worktree-settle.test.sh` owns the same stale-metadata versus actual-pane setup without depending on live timing.
+
+Exact guarded command shape:
+
+```bash
+HERDR_LAB_HELPER='/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/4/firstmate/bin/fm-herdr-lab.sh'
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fix-herdr-spawn-worktree-path-race-20260721-fixed)
+trap '"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"' EXIT
+export PATH="$PWD/.tmp/herdr-spawn-race-lab/fakebin:$PATH"
+export FM_LAB_STALE="$PWD/.tmp/herdr-spawn-race-lab/pool/stale-slot"
+export FM_LAB_ACTUAL="$PWD/.tmp/herdr-spawn-race-lab/pool/actual-slot"
+export FM_LAB_STALE_SECONDS=4
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" status --json
+FM_HOME="$PWD/.tmp/herdr-spawn-race-lab/home" \
+  FM_STATE_OVERRIDE="$PWD/.tmp/herdr-spawn-race-lab/home/state" \
+  FM_DATA_OVERRIDE="$PWD/.tmp/herdr-spawn-race-lab/home/data" \
+  FM_PROJECTS_OVERRIDE="$PWD/.tmp/herdr-spawn-race-lab/home/projects" \
+  FM_CONFIG_OVERRIDE="$PWD/.tmp/herdr-spawn-race-lab/home/config" \
+  FM_SPAWN_NO_GUARD=1 FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
+  bin/fm-spawn.sh lab-fixed "$PWD/.tmp/herdr-spawn-race-lab/project" claude
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get w1:p2
+```
+
+Exact pre-fix reproduction output:
+
+```text
+spawned lab-race harness=claude kind=ship mode=no-mistakes yolo=off window=fm-lab-fix-herdr-spawn-61370-7831:w1:p2 worktree=/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/stale-slot
+spawn_exit=0
+worktree=/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/stale-slot
+w1:p2 /Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/actual-slot
+```
+
+Exact fixed-path output under the same four-second stale phase:
+
+```text
+{
+  "client": "0.7.4",
+  "protocol": 16,
+  "server": "0.7.4",
+  "session": "fm-lab-fix-herdr-spawn-66327-11890"
+}
+treehouse=v2.1.0
+spawned lab-fixed harness=claude kind=ship mode=no-mistakes yolo=off window=fm-lab-fix-herdr-spawn-66327-11890:w1:p2 worktree=/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/actual-slot
+spawn_exit=0
+worktree=/Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/actual-slot
+w1:p2 /Users/dmitrijarkov/.treehouse/firstmate-8bf1b0/7/firstmate/.tmp/herdr-spawn-race-lab/pool/actual-slot
+metadata_matches_pane=yes
+```
+
+The same lab then withheld the pane response with a one-second test timeout and produced this exact fail-closed output:
+
+```text
+spawn_exit=1
+error: treehouse get did not enter a worktree within 60s; inspect window fm-lab-fix-herdr-spawn-78880-15223:w1:p2
+metadata_published=no
+both_slots_preserved=yes
+```
+
+`bin/backends/herdr.sh` is the single owner of Herdr worktree-path detection because only that adapter can turn an exact pane command into a shell acknowledgement.
+`bin/fm-spawn.sh` dispatches to that owner and retains the shared Git worktree-root isolation check before hook creation, launch, or metadata publication.
+The Herdr owner queues one `pwd -P` probe at a time, accepts only two matching absolute responses, and returns no path for missing, malformed, changing, or timed-out responses.
+It never treats `pane get`'s `cwd` or `foreground_cwd` as worktree, metadata, return, or cleanup authority.
+
+Exact focused regression command and output:
+
+```text
+$ bash tests/fm-spawn-worktree-settle.test.sh
+ok - a single transient stale pane_current_path read is not accepted as the worktree
+ok - an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle
+ok - Herdr stale foreground metadata cannot override the exact pane shell's actual worktree
+ok - Herdr missing pane-owned path proof refuses metadata and preserves every possible slot
+# all fm-spawn-worktree-settle tests passed
+```
 
 ## End-to-end verification: workspace-per-home (P3)
 
@@ -1024,7 +1115,7 @@ Covered by the unit cases in `tests/fm-afk-launch.test.sh` (clear-on-fresh-entry
 ## Known gaps and follow-up notes
 
 - **RESOLVED: worktree-discovery isolation guard's symlinked-project-prefix false refusal.** Originally discovered while building the runtime-backend-auto-detection real smoke test (`tests/fm-backend-autodetect-smoke.test.sh`), which needed a scratch project.
-  `fm-spawn.sh`'s `PROJ_ABS` was a LOGICAL `cd && pwd` (symlink components kept), while herdr's `foreground_cwd` (and real tmux's `pane_current_path`, on the same OS-level cwd primitive) report the PHYSICALLY resolved path.
+  `fm-spawn.sh`'s `PROJ_ABS` was a LOGICAL `cd && pwd` with symlink components kept, while the then-current Herdr `foreground_cwd` reader and real tmux's `pane_current_path` reported the PHYSICALLY resolved path.
   When the project itself lived under a symlinked directory (e.g. macOS's `/tmp` -> `/private/tmp`), the very first worktree-discovery poll saw two different strings for the identical starting directory and the isolation guard false-refused the spawn as "not isolated" before `treehouse get` ever moved the pane - backend-agnostic, not specific to herdr.
   Fixed 2026-07-06 (backlog `fm-spawn-symlink-guard-s8`): `bin/fm-spawn.sh` now canonicalizes once into `PROJ_ABS_REAL` (`cd "$PROJ_ABS" && pwd -P`) right after `PROJ_ABS` is resolved, canonicalizes each observed pane cwd for the worktree-discovery comparison, and uses `PROJ_ABS_REAL` in `validate_spawn_worktree`'s own primary-vs-worktree comparison instead of recomputing from the still-symlinked `PROJ_ABS`.
   This removes both failure directions: a symlinked prefix can no longer false-refuse an isolated spawn, and, since both sides are physically resolved for comparison, a genuinely tangled spawn (worktree resolves to the same physical directory as the project) still correctly refuses.
