@@ -487,7 +487,7 @@ test_jobs_requires_proven_isolated() {
 }
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
-  local tmp repo runner evidence fake_bin a b c d rc begin_n end_n
+  local tmp repo runner delayed_runner evidence fake_bin a b c d rc begin_n end_n
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-sched.XXXXXX")
   repo="$tmp/repo"
   runner="$repo/bin/fm-test-run.sh"
@@ -499,6 +499,17 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  delayed_runner="$repo/bin/fm-test-run-delayed.sh"
+  cp "$RUNNER" "$delayed_runner"
+  python3 -c '
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+old = "      sleep 0.01\n"
+assert text.count(old) == 1
+path.write_text(text.replace(old, "      sleep 0.2\n"))
+' "$delayed_runner"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -511,6 +522,35 @@ if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
 fi
 exit 1
 SH
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+touch "$SCHED_EVIDENCE/oldest-finished"
+echo "ok - oldest fixture finished"
+SH
+  cat >"$repo/$b" <<'SH'
+#!/usr/bin/env bash
+touch "$SCHED_EVIDENCE/newest-finished"
+echo "ok - newest fixture finished"
+SH
+  cat >"$repo/$c" <<'SH'
+#!/usr/bin/env bash
+if [ ! -e "$SCHED_EVIDENCE/oldest-finished" ] || [ ! -e "$SCHED_EVIDENCE/newest-finished" ]; then
+  echo "not ok - replacement started before delayed polling observed both completions"
+  exit 1
+fi
+echo "ok - delayed polling observed both initial workers already finished"
+SH
+  chmod +x "$runner" "$delayed_runner" "$repo/$a" "$repo/$b" "$repo/$c" "$fake_bin/stat"
+  set +e
+  PATH="$fake_bin:$PATH" SCHED_EVIDENCE="$evidence" \
+    "$delayed_runner" --jobs 2 "$a" "$b" "$c" >"$tmp/delayed-out" 2>"$tmp/delayed-err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$tmp/delayed-out" "$tmp/delayed-err"; rm -rf "$tmp"; fail "delayed polling must not claim the oldest worker was still running"; }
+  grep -Fq 'ok - delayed polling observed both initial workers already finished' "$tmp/delayed-out" \
+    || fail "delayed-polling fixture did not prove both initial workers had finished"
+
+  rm -f "$evidence/oldest-finished" "$evidence/newest-finished"
   cat >"$repo/$a" <<'SH'
 #!/usr/bin/env bash
 # Wait for the replacement worker instead of imposing a subsecond deadline on
