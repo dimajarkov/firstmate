@@ -42,7 +42,8 @@ A registered secondmate's validated home is the authority for bearings current s
 The original cross-home projection instead treated the secondmate agent as an ordinary parent task, so an idle secondmate's `fm-crew-state` fallback selected the latest append-only parent status event even when structured state in the registered home contradicted it.
 The parent-status contract also required explicit keyed resolution for decisions and blockers but not for a material `working` phase, so a start event could remain unsuperseded after the corresponding home backlog had moved the work to Done.
 Generated secondmate charters now key material routed-work phases and close them with a same-key later state or `resolved` event, while the structured home remains authoritative even if that closure is missing.
-Cross-home reads validate the seeded identity and operational-directory boundaries, use per-home time and output bounds, and classify unavailable, invalid, malformed, or inconsistent structured state as unknown rather than reviving a parent event as current work.
+Cross-home reads validate the seeded identity and operational-directory boundaries, use per-home time and output bounds, and classify unavailable, malformed, or inconsistent structured state as unknown rather than reviving a parent event as current work.
+When only an owned child's current classification is unavailable, the home classification stays unknown while independently trustworthy structured decisions, holds, queued and landed records, endpoint identities, counts, and provenance remain available; every other invalid path stays strict and exposes none of those child-derived surfaces.
 A bounded direct-report terminal tail can help diagnose a mismatch by showing that historical parent wording is still visible, but it is untrusted supplemental evidence because scrollback, prompts, copied output, idle shells, and agent prose are not durable state.
 The snapshot strips control sequences, retains only capture metadata and literal event-corroboration flags, and never lets terminal evidence override a valid structured classification.
 The default path remains local-only; live GitHub enrichment exists only behind the bearings `--include-prs` opt-in.
@@ -133,8 +134,8 @@ Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`,
 
 Crewmate and scout dispatch can stay on the static crewmate harness resolved by `config/crew-harness`, or it can use local dispatch profiles in `config/crew-dispatch.json`.
 The dispatch file is intentionally judgment-based: firstmate reads the natural-language rules at intake, chooses the best matching rule, resolves that rule directly or through a supported selector, and passes only concrete `--harness`, `--model`, and `--effort` axes to `fm-spawn.sh`.
-The shell scripts validate the JSON shape and verified harness/effort combinations, and `fm-dispatch-select.sh` owns deterministic selector behavior, but they do not parse task intent or match the natural-language rules.
-The session-start bootstrap step surfaces either the active rule block or a concise invalid-config line at startup.
+The shell scripts validate the JSON shape and verified harness/effort combinations, and `fm-dispatch-select.sh` owns quota-aware array selection plus OS-backed random fallback, but they do not parse task intent or match the natural-language rules.
+The session-start bootstrap step keeps valid dispatch configuration silent unless verbose facts are enabled and surfaces a concise invalid-config line when validation fails.
 When the file exists, `fm-spawn.sh` refuses crewmate and scout launches without an explicit harness, so `config/crew-harness` is only automatic when no dispatch profile file is active.
 Secondmate launches are exempt because they resolve the secondmate harness and any optional secondmate model or effort tokens instead.
 Unsupported effort values are still recorded in task meta when passed to `fm-spawn.sh`, but the launch template omits any effort flag that the selected harness does not accept.

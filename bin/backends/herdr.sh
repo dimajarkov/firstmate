@@ -1281,22 +1281,76 @@ fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
 }
 
-# fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
-# any error. Mirrors tmux's pane_current_path poll used for worktree-path
-# discovery after `treehouse get`.
+# fm_backend_herdr_shell_quote: quote one value for the pane's POSIX-like
+# interactive shell without evaluating it in the spawning process.
+fm_backend_herdr_shell_quote() {  # <value>
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+# fm_backend_herdr_current_path: wait for two consecutive cwd probes executed
+# by the target pane's own interactive shell and print the stable physical path.
 #
-# Verified pitfall: `pane get`'s `.result.pane.cwd` is the pane's cwd AT
-# CREATION TIME - the top-level shell's cwd - and does NOT update when that
-# shell `cd`s or enters a subshell (as `treehouse get` does). Reading it here
-# would make fm-spawn.sh's worktree-discovery poll never see the pane "leave"
-# the project directory, since `cwd` stays frozen at the original path forever.
-# `.result.pane.foreground_cwd` tracks the ACTUALLY RUNNING foreground
-# process's cwd instead, which is what changes when `treehouse get` enters its
-# worktree subshell - confirmed live against a real treehouse acquisition.
-fm_backend_herdr_current_path() {  # <target>
-  fm_backend_herdr_target_ready "$1" || return 0
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
-    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+# Herdr's `pane get` path fields are observations about a foreground process,
+# not an acknowledgement from the target shell that received `treehouse get`.
+# A stale but real pool path can therefore remain stable long enough to pass a
+# generic two-read poll while the pane later enters a different worktree.
+#
+# Each probe is queued through the exact pane and writes `pwd -P` atomically to
+# a private temporary directory.
+# The next probe is not sent until the prior response arrives, so a slow
+# `treehouse get` transition cannot accumulate commands or turn an old response
+# into cleanup authority.
+# No worktree path is returned unless two shell-owned responses agree within the
+# shared timeout; every missing, malformed, or changing response fails closed.
+fm_backend_herdr_current_path() {  # <target> [timeout-seconds]
+  local target=$1 timeout=${2:-${FM_BACKEND_HERDR_PATH_TIMEOUT_SECS:-60}}
+  local probe_dir probe_path probe_tmp probe_path_q probe_tmp_q command
+  local candidate path lines ticks
+  case "$timeout" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  fm_backend_herdr_target_ready "$target" || return 1
+  probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-cwd.XXXXXX") || return 1
+  probe_path="$probe_dir/path"
+  probe_tmp="$probe_dir/path.tmp"
+  probe_path_q=$(fm_backend_herdr_shell_quote "$probe_path")
+  probe_tmp_q=$(fm_backend_herdr_shell_quote "$probe_tmp")
+  command="(umask 077; pwd -P > $probe_tmp_q && mv $probe_tmp_q $probe_path_q)"
+  candidate=
+  ticks=$((timeout * 10))
+  while [ "$ticks" -gt 0 ]; do
+    rm -f "$probe_path" "$probe_tmp"
+    if ! fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane run "$FM_BACKEND_HERDR_PANE" "$command" >/dev/null 2>&1; then
+      rm -f "$probe_path" "$probe_tmp"
+      rmdir "$probe_dir" 2>/dev/null || true
+      return 1
+    fi
+    while [ "$ticks" -gt 0 ] && [ ! -f "$probe_path" ]; do
+      sleep 0.1
+      ticks=$((ticks - 1))
+    done
+    [ -f "$probe_path" ] || break
+    lines=$(wc -l < "$probe_path" 2>/dev/null | tr -d '[:space:]')
+    path=
+    [ "$lines" = 1 ] && IFS= read -r path < "$probe_path"
+    case "$path" in
+      /*)
+        if [ -n "$candidate" ] && [ "$path" = "$candidate" ]; then
+          rm -f "$probe_path" "$probe_tmp"
+          rmdir "$probe_dir" 2>/dev/null || true
+          printf '%s\n' "$path"
+          return 0
+        fi
+        candidate=$path
+        ;;
+      *) candidate= ;;
+    esac
+  done
+  rm -f "$probe_path" "$probe_tmp"
+  rmdir "$probe_dir" 2>/dev/null || true
+  return 1
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,

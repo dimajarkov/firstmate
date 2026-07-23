@@ -772,7 +772,7 @@ fi
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
 # Every backend's own current-path read (tmux's pane_current_path, herdr's
-# foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
+# exact-pane shell probe, zellij/cmux's active pwd probe against the live shell) can
 # report the OS-level, physically-resolved cwd, so comparing it against a
 # still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
 # below never notices the pane left the project) or false-positive (the
@@ -1054,6 +1054,13 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
+  # Herdr owns a stronger backend-specific proof here: it queues two `pwd -P`
+  # probes through the exact pane and accepts only matching shell responses.
+  # Its foreground-process metadata is deliberately not cleanup or publication
+  # authority because a stale pool path can remain stable across this transition.
+  if [ "$BACKEND" = herdr ]; then
+    WT=$(fm_backend_herdr_current_path "$WT_TARGET" || true)
+  else
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
@@ -1092,6 +1099,7 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     fi
     sleep 1
   done
+  fi
   if [ -z "$WT" ]; then
     echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
     exit 1
