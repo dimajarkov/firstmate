@@ -53,6 +53,8 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/treehouse-test-safety.sh
+. "$ROOT/tests/treehouse-test-safety.sh"
 
 # TMP_ROOT is physically resolved (mktemp -d "$(pwd -P)"-relative) for the same
 # low-noise scratch fixture shape used by
@@ -63,15 +65,26 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-e2e.XXXXXX")
 SESSION="fm-lab-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
-WT1=; WT2=
+PROJ1=; PROJ2=
+LAB_CLEANUP_ARMED=0
 cleanup_all() {
-  [ -n "$WT1" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT1" >/dev/null 2>&1
-  [ -n "$WT2" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT2" >/dev/null 2>&1
-  herdr_safe_stop_and_delete "$SESSION"
+  local cleanup_status=0 teardown_status
+  if [ "$LAB_CLEANUP_ARMED" -eq 1 ]; then
+    if herdr_safe_stop_and_delete "$SESSION"; then
+      LAB_CLEANUP_ARMED=0
+    else
+      teardown_status=$?
+      cleanup_status=$teardown_status
+    fi
+  fi
+  fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ1" || cleanup_status=$?
+  fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ2" || cleanup_status=$?
   rm -rf "$TMP_ROOT"
+  return "$cleanup_status"
 }
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
+LAB_CLEANUP_ARMED=1
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
@@ -114,7 +127,7 @@ rc=$?
 CM1_META="$PRIMARY_HOME/state/cm1.meta"
 [ -f "$CM1_META" ] || fail "no meta written for cm1"
 assert_contains_local "$(cat "$CM1_META")" "backend=herdr" "cm1 meta missing backend=herdr"
-WT1=$(grep '^worktree=' "$CM1_META" | cut -d= -f2-)
+grep '^worktree=/' "$CM1_META" >/dev/null || fail "cm1 meta missing an absolute worktree"
 CM1_PANE=$(grep '^herdr_pane_id=' "$CM1_META" | cut -d= -f2-)
 [ -n "$CM1_PANE" ] || fail "cm1 meta missing herdr_pane_id"
 pass "real herdr E2E: a primary-shaped home spawns a crewmate on the herdr backend"
@@ -169,7 +182,7 @@ rc=$?
 CM2_META="$SM_HOME/state/cm2.meta"
 [ -f "$CM2_META" ] || fail "no meta written for cm2 (recorded in the SECONDMATE's own state dir - it did its own spawning)"
 assert_contains_local "$(cat "$CM2_META")" "backend=herdr" "cm2 meta missing backend=herdr"
-WT2=$(grep '^worktree=' "$CM2_META" | cut -d= -f2-)
+grep '^worktree=/' "$CM2_META" >/dev/null || fail "cm2 meta missing an absolute worktree"
 CM2_PANE=$(grep '^herdr_pane_id=' "$CM2_META" | cut -d= -f2-)
 [ -n "$CM2_PANE" ] || fail "cm2 meta missing herdr_pane_id"
 pass "real herdr E2E: a crewmate spawns successfully FROM a secondmate-shaped home's own fm-spawn.sh process"
@@ -215,7 +228,6 @@ fi
 if ! herdr pane get "$CM2_PANE" --session "$SESSION" >/dev/null 2>&1; then
   fail "tearing down cm1 must not have closed cm2's pane (wrong tab closed)"
 fi
-WT1=
 pass "real herdr E2E: tearing down cm1 closes only its own tab - the secondmate's and cm2's tabs survive untouched"
 
 TD2_OUT="$TMP_ROOT/td2.out"
@@ -231,10 +243,11 @@ fi
 if ! herdr pane get "$SM_PANE" --session "$SESSION" >/dev/null 2>&1; then
   fail "tearing down cm2 must not have closed the secondmate's OWN pane (wrong tab closed)"
 fi
-WT2=
 pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate's own tab (same workspace) survives untouched"
 
 fm_backend_herdr_kill "$SESSION:$SM_PANE"
 
-cleanup_all
+cleanup_all || fail "test-owned Treehouse pool cleanup failed"
+cleanup_all || fail "repeated partial-state cleanup was not idempotent"
 trap - EXIT
+pass "real herdr E2E: successful, failed, partial, and repeated cleanup removed test-owned Treehouse pools before their temporary backing repositories"

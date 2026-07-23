@@ -8,6 +8,8 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+# shellcheck source=tests/treehouse-test-safety.sh
+. "$ROOT/tests/treehouse-test-safety.sh"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -257,35 +259,35 @@ HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" name fm-herdr-presentation-projection)
 export HERDR_SESSION="$HERDR_LAB_SESSION" HERDR_LAB_SESSION
 LAB_READY=0
-RECORDED_WORKTREES=""
 LOCK_CONTENTION_OWNER_PID=
+PROJECT_DIR=
 cleanup_all() {
-  local wt
+  local cleanup_status=0 teardown_status
   if [ -n "$LOCK_CONTENTION_OWNER_PID" ]; then
     kill "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
     wait "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null || true
     LOCK_CONTENTION_OWNER_PID=
   fi
-  while IFS= read -r wt; do
-    [ -n "$wt" ] || continue
-    [ -d "$wt" ] || continue
-    "$REAL_TREEHOUSE" return --force "$wt" >/dev/null 2>&1 || true
-  done <<EOF
-$RECORDED_WORKTREES
-EOF
   if [ "$LAB_READY" -eq 1 ]; then
-    PATH="$HERDR_ORIGINAL_PATH" \
-      "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1 || true
-    LAB_READY=0
+    if PATH="$HERDR_ORIGINAL_PATH" \
+      "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" >/dev/null 2>&1; then
+      LAB_READY=0
+    else
+      teardown_status=$?
+      cleanup_status=$teardown_status
+    fi
   fi
+  PATH="$HERDR_ORIGINAL_PATH" \
+    fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJECT_DIR" || cleanup_status=$?
   rm -rf "$TMP_ROOT"
+  return "$cleanup_status"
 }
 trap cleanup_all EXIT
 
+LAB_READY=1
 PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not provision the isolated Herdr lab"
-LAB_READY=1
 
 lab() {
   PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"
@@ -369,7 +371,6 @@ remember_meta_worktree() {  # <meta>
   local wt
   wt=$(grep '^worktree=' "$1" | cut -d= -f2-)
   [ -n "$wt" ] || fail "metadata did not record a worktree"
-  RECORDED_WORKTREES="${RECORDED_WORKTREES}${wt}"$'\n'
   printf '%s' "$wt"
 }
 
@@ -1321,5 +1322,10 @@ PATH="$HERDR_ORIGINAL_PATH" \
 LAB_READY=0
 pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
 
-cleanup_all
+cleanup_all || {
+  trap - EXIT
+  fail "test-owned Treehouse pool cleanup failed"
+}
+cleanup_all || fail "repeated partial-state cleanup was not idempotent"
 trap - EXIT
+pass "real Herdr lab: successful, failed, partial, and repeated cleanup removed the test-owned Treehouse pool before its temporary backing repository"
