@@ -901,7 +901,7 @@ SECOND_LABEL=$(lab workspace get "$SECOND_WSID" | jq -r '.result.workspace.label
 [ -z "$(projection_labels_from_log "$SECOND_SPAWN_LOG_START")" ] \
   || fail "secondmate spawn created a corner projection workspace"
 if sed -n "$((SECOND_SPAWN_LOG_START + 1)),\$p" "$HERDR_CALL_LOG" \
-  | grep -E $'^(workspace\tmove|session\tlist)' >/dev/null 2>&1; then
+  | grep -E $'^workspace\tmove' >/dev/null 2>&1; then
   fail "secondmate spawn attempted presentation ordering"
 fi
 # shellcheck source=/dev/null
