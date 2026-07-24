@@ -100,7 +100,7 @@ FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
 # at a seeded secondmate home's root, containing exactly that secondmate's id.
 # The primary firstmate home never carries this marker.
 FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
-FM_BACKEND_HERDR_WORKSPACE_BINDING="state/.herdr-workspace"
+FM_BACKEND_HERDR_WORKSPACE_BINDING=".herdr-workspace"
 # The default-off presentation projection is intentionally separate from the
 # authoritative task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
@@ -127,21 +127,21 @@ FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
 # (its own process's FM_HOME still names the primary at that point) - see
 # fm-spawn.sh's herdr case arm.
 #
-# Empty or malformed marker content falls back to firstmate rather than
-# producing an ambiguous workspace label. Valid labels permit Unicode but not
-# a slash or control byte, which would break Herdr's presentation classifiers.
 fm_backend_herdr_secondmate_id() {
   local marker="$FM_HOME/$FM_BACKEND_HERDR_SECONDMATE_MARKER" id
-  [ -f "$marker" ] || return 1
-  id=$(cat "$marker" 2>/dev/null || true)
+  if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+    return 1
+  fi
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 2
+  id=$(cat "$marker" 2>/dev/null) || return 2
   id="${id#"${id%%[![:space:]]*}"}"
   id="${id%"${id##*[![:space:]]}"}"
-  case "$id" in ''|*'/'*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
+  case "$id" in ''|*'/'*|*$'\n'*|*$'\r'*|*$'\t'*) return 2 ;; esac
   printf '%s' "$id"
 }
 
 fm_backend_herdr_workspace_label() {
-  local id display
+  local id display status
   if id=$(fm_backend_herdr_secondmate_id); then
     display=$id
     case "$id" in
@@ -150,6 +150,8 @@ fm_backend_herdr_workspace_label() {
     [ -n "$display" ] || display=$id
     printf '2🏴‍☠️-%s' "$display"
   else
+    status=$?
+    [ "$status" -eq 1 ] || return "$status"
     printf 'firstmate'
   fi
 }
@@ -170,10 +172,55 @@ fm_backend_herdr_workspace_binding_field() {  # <binding> <field>
   printf '%s' "$values"
 }
 
+fm_backend_herdr_workspace_state_dir() {
+  local home state_path state
+  [ -d "$FM_HOME" ] || return 1
+  home=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || return 1
+  state_path="$FM_HOME/state"
+  if [ -L "$state_path" ] && [ ! -e "$state_path" ]; then
+    return 1
+  fi
+  if [ -d "$state_path" ]; then
+    state=$(cd "$state_path" 2>/dev/null && pwd -P) || return 1
+  elif [ -e "$state_path" ] || [ -L "$state_path" ]; then
+    return 1
+  else
+    state="$home/state"
+  fi
+  case "$state" in
+    "$home"/*) printf '%s' "$state" ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_herdr_workspace_binding_preflight() {
+  local status state binding tmp
+  if fm_backend_herdr_secondmate_id >/dev/null; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 1 ] && return 0
+    return "$status"
+  fi
+  state=$(fm_backend_herdr_workspace_state_dir) || return 1
+  if [ ! -e "$state" ]; then
+    mkdir -p "$state" || return 1
+  fi
+  [ -d "$state" ] || return 1
+  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
+  if [ -e "$binding" ] || [ -L "$binding" ]; then
+    [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
+  fi
+  tmp=$(mktemp "$state/.herdr-workspace.preflight.XXXXXX") || return 1
+  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+}
+
 fm_backend_herdr_workspace_bound_id() {  # <session>
-  local session=$1 binding="$FM_HOME/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
-  local version home_id bound_session workspace expected_id
+  local session=$1 state binding version home_id bound_session workspace expected_id
   expected_id=$(fm_backend_herdr_secondmate_id) || return 1
+  state=$(fm_backend_herdr_workspace_state_dir) || return 1
+  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
   [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
   version=$(fm_backend_herdr_workspace_binding_field "$binding" version) || return 1
   home_id=$(fm_backend_herdr_workspace_binding_field "$binding" home_id) || return 1
@@ -185,16 +232,25 @@ fm_backend_herdr_workspace_bound_id() {  # <session>
 }
 
 fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
-  local session=$1 workspace=$2 id state binding tmp
-  id=$(fm_backend_herdr_secondmate_id) || return 0
+  local session=$1 workspace=$2 id status state binding tmp
+  if id=$(fm_backend_herdr_secondmate_id); then
+    :
+  else
+    status=$?
+    [ "$status" -eq 1 ] && return 0
+    return "$status"
+  fi
   case "$session" in ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
-  state="$FM_HOME/state"
-  binding="$FM_HOME/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
-  if [ ! -e "$state" ] && [ ! -L "$state" ]; then
+  state=$(fm_backend_herdr_workspace_state_dir) || return 1
+  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
+  if [ ! -e "$state" ]; then
     mkdir -p "$state" || return 1
   fi
-  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  [ -d "$state" ] || return 1
+  if [ -e "$binding" ] || [ -L "$binding" ]; then
+    [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
+  fi
   tmp=$(mktemp "$state/.herdr-workspace.bind.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   if ! {
@@ -206,7 +262,7 @@ fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$binding"
+  mv -f "$tmp" "$binding" || { rm -f "$tmp"; return 1; }
 }
 
 # fm_backend_herdr_cli: run `herdr <args...>` scoped to <session>, setting
@@ -908,15 +964,19 @@ fm_backend_herdr_server_ensure() {  # <session>
 # compatibility with live homes during this transition. Current display labels
 # are never operational selectors because two durable ids can share one.
 fm_backend_herdr_workspace_find() {  # <session>
-  local session=$1 id label legacy bound list matches
-  label=$(fm_backend_herdr_workspace_label)
+  local session=$1 id status label legacy bound list matches
+  label=$(fm_backend_herdr_workspace_label) || return 1
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 0
   # NOTE: the jq variable is $want, NOT $label - `label` is a jq reserved
   # keyword (label/break), so declaring a jq variable named "label" is a
   # compile error that `2>/dev/null` would silently swallow, making this find
   # ALWAYS return empty and every spawn mint a fresh "firstmate" workspace
   # (the workspace leak).
-  if ! id=$(fm_backend_herdr_secondmate_id); then
+  if id=$(fm_backend_herdr_secondmate_id); then
+    :
+  else
+    status=$?
+    [ "$status" -eq 1 ] || return "$status"
     matches=$(printf '%s' "$list" | jq -r --arg want "$label" \
       '.result.workspaces[]? | select(.label == $want) | .workspace_id' 2>/dev/null)
     [ -z "$matches" ] || printf '%s\n' "$matches" | head -1
@@ -1044,21 +1104,31 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
 # attach to). --no-focus is passed unconditionally anyway, for defense in
 # depth and because it is a no-op in the already-safe case.
 fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
-  local session=$1 cwd=$2 wsid out label
+  local session=$1 cwd=$2 wsid out label root_pane seeded_tab
   FM_BACKEND_HERDR_WS_ID=""
   FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=""
-  wsid=$(fm_backend_herdr_workspace_find "$session")
+  label=$(fm_backend_herdr_workspace_label) || return 1
+  fm_backend_herdr_workspace_binding_preflight || return 1
+  wsid=$(fm_backend_herdr_workspace_find "$session") || return 1
   if [ -n "$wsid" ]; then
     fm_backend_herdr_workspace_binding_publish "$session" "$wsid" || return 1
     FM_BACKEND_HERDR_WS_ID=$wsid
     printf '%s' "$wsid"
     return 0
   fi
-  label=$(fm_backend_herdr_workspace_label)
   out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   [ -n "$wsid" ] || return 1
-  fm_backend_herdr_workspace_binding_publish "$session" "$wsid" || return 1
+  root_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  seeded_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  if ! fm_backend_herdr_workspace_binding_publish "$session" "$wsid"; then
+    if [ -n "$root_pane" ]; then
+      fm_backend_herdr_cli "$session" pane close "$root_pane" >/dev/null 2>&1 || true
+    elif [ -n "$seeded_tab" ]; then
+      fm_backend_herdr_cli "$session" tab close "$seeded_tab" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
   FM_BACKEND_HERDR_WS_ID=$wsid
   # Herdr seeds a new workspace with one auto-created default tab firstmate
   # never uses. It is NOT pruned here: at this instant it is the workspace's
@@ -1067,7 +1137,7 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
   # workspace we just created. fm_backend_herdr_create_task prunes it instead,
   # once the first real task tab exists alongside it, and only ever targets
   # this exact captured tab_id.
-  FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=$seeded_tab
   printf '%s' "$wsid"
 }
 
@@ -1084,9 +1154,13 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace>
   fm_backend_herdr_version_check || return 1
   session=$(fm_backend_herdr_session)
   fm_backend_herdr_server_ensure "$session" || return 1
-  fm_backend_herdr_workspace_ensure "$session" "$cwd" >/dev/null || { label=$(fm_backend_herdr_workspace_label); echo "error: failed to ensure herdr workspace '$label' in session '$session'" >&2; return 1; }
+  fm_backend_herdr_workspace_ensure "$session" "$cwd" >/dev/null || {
+    label=$(fm_backend_herdr_workspace_label 2>/dev/null || printf '<invalid-secondmate-marker>')
+    echo "error: failed to ensure herdr workspace '$label' in session '$session'" >&2
+    return 1
+  }
   if [ -z "$FM_BACKEND_HERDR_WS_ID" ]; then
-    label=$(fm_backend_herdr_workspace_label)
+    label=$(fm_backend_herdr_workspace_label 2>/dev/null || printf '<invalid-secondmate-marker>')
     echo "error: failed to ensure herdr workspace '$label' in session '$session'" >&2
     return 1
   fi
@@ -1430,24 +1504,6 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
     fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
   fi
-}
-
-# fm_backend_herdr_projection_parent_workspace_exact: resolve one exact parent
-# workspace only when its presentation label is unique in the named session.
-fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-label>
-  local session=$1 parent_label=$2 list
-  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
-  printf '%s' "$list" | jq -er --arg parent_label "$parent_label" '
-    (.result.workspaces // null) as $spaces
-    | select(($spaces | type) == "array")
-    | [$spaces[]? | select(.label == $parent_label)]
-    | if length == 1
-        and (.[0].workspace_id | type) == "string"
-        and (.[0].workspace_id | length) > 0
-      then .[0].workspace_id
-      else empty
-      end
-  ' 2>/dev/null
 }
 
 # fm_backend_herdr_projection_live_binding_matches: verify one exact projected

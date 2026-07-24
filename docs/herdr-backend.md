@@ -37,6 +37,7 @@ Each Firstmate home gets one durable workspace with one task tab per endpoint.
 The primary workspace is `firstmate`.
 A secondmate home uses the standard visible label `2🏴‍☠️-<id>`, derived from its validated `.fm-secondmate-home` marker by omitting only a terminal `-secondmate`.
 The durable marker id and exact recorded endpoint targets remain unchanged, and the label requires no per-home configuration.
+An absent marker selects the primary label, while malformed or empty present marker content refuses workspace resolution instead of routing into the primary workspace.
 The secondmate process and every child it launches resolve the same home label; a secondmate launched by the primary receives a narrowly scoped home override during container creation.
 
 Attach to the selected named Herdr session and switch to the relevant home workspace to watch its task tabs.
@@ -48,6 +49,7 @@ The first workspace in a completely empty Herdr session must become focused beca
 Herdr does not enforce workspace or tab label uniqueness.
 The primary home retains its established label lookup, while each secondmate home persists its exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding.
 Suffix-colliding ids such as `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while spawn, recovery, list-live, and presentation ordering remain scoped to their separate exact workspace ids.
+An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
 Without a valid exact binding, Firstmate reuses exactly one live legacy `2ndmate-<id>` workspace without renaming it and publishes the binding for subsequent operations.
 Ambiguous duplicate legacy labels are left untouched rather than guessed at.
 Avoid naming a personal workspace `firstmate` because the primary adapter retains label-based lookup.
