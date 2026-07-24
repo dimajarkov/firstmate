@@ -524,7 +524,19 @@ fm_backend_herdr_workspace_legacy_exact_id() {  # <session> <workspace-list-json
   done
   matches=${matches%$'\n'}
   count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')
-  [ "$count" -eq 1 ] || return 1
+  if [ "$count" -eq 0 ]; then
+    # The pre-identity legacy contract is one narrowly scoped migration
+    # exception: adopt exactly one workspace carrying this home's old canonical
+    # label, then immediately bind its immutable id. Current display labels,
+    # renamed workspaces, projections, and task metadata never authorize this.
+    legacy=$(fm_backend_herdr_workspace_legacy_label) || return 2
+    matches=$(printf '%s' "$workspaces" | jq -r --arg label "$legacy" '
+      [.result.workspaces[]? | select(.label == $label) | .workspace_id] | if length == 1 then .[0] else empty end
+    ' 2>/dev/null) || return 2
+    [ -n "$matches" ] || return 1
+  elif [ "$count" -ne 1 ]; then
+    return 1
+  fi
   count=$(printf '%s' "$workspaces" | jq -er --arg workspace "$matches" '
     [.result.workspaces[]? | select(.workspace_id == $workspace)] | length
   ' 2>/dev/null) || return 2
