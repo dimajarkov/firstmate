@@ -44,7 +44,7 @@ You do not need to attach for routine supervision: from an active firstmate sess
 
 An optional local `config/herdr-presentation-spaces` presence flag gives a clean new task a disposable one-task workspace instead.
 The flag is absent by default, is inherited into secondmate homes through the primary-authoritative inheritable-config owner, and the feature is presentation-only and best-effort rather than durable grouping.
-Every newly projected child created by a primary or secondmate home is inserted as a top-level space immediately after its owning parent (`firstmate` or that home's derived `2🏴‍☠️-<id>` label) contiguous child block when Herdr protocol 16 `workspace.move` and `python3` are available.
+Every newly projected child created by a primary or secondmate home follows the exact-parent ordering contract in "Optional disposable single-task presentation spaces" when Herdr protocol 16 `workspace.move` and `python3` are available.
 Unavailable or failed ordering warns and leaves the successfully created worker running in Herdr's current order.
 See "Optional disposable single-task presentation spaces" below before enabling it.
 
@@ -183,7 +183,8 @@ For every eligible projected create from a primary or secondmate home, Firstmate
 One bounded lock per live named Herdr session/socket serializes projected creates, ordering, exact restart replacements, abort cleanup, and projected normal cleanup across every Firstmate home that shares the session.
 The lock key is derived from the verified session name and canonical socket path and lives in a machine-private shared runtime namespace, never inside any one home's `state/`.
 An unverified or ambiguous socket or an insecure shared-lock namespace fails closed for presentation mutation, warns, and leaves the task on the ordinary flat path.
-The new response-derived workspace id is inserted immediately after its owning parent (`firstmate` or the derived `2🏴‍☠️-<id>` label) contiguous child block and before the next parent.
+The new response-derived workspace id is inserted immediately after the exact owning parent workspace's contiguous child block and before the next parent.
+That parent is selected by its home-scoped exact workspace id, while its actual `firstmate`, current `2🏴‍☠️-<id>`, or legacy `2ndmate-<id>` label is retained only for presentation grouping.
 New-format `└ ... · p:<token>` children define that block; already-adjacent legacy `firstmate/... · p:<token>` or `2ndmate-<id>/... · p:<token>` projections may extend it read-only for compatibility and are never renamed or migrated.
 An ambiguous, foreign, or detached presentation child makes the ordering shape unverifiable, so Firstmate warns and skips the move instead of assigning ownership by guesswork.
 Only the exact workspace id returned by the current projected create is ever a move target.
@@ -236,7 +237,7 @@ Zero token matches, including a label whose token was removed by a human rename,
 The user-visible compromises are intentional:
 
 - Grouping remains best-effort rather than guaranteed; only an exact same-identity version 2 binding survives a Herdr restart in place.
-- Clean projected creates form one stable contiguous child block immediately after their owning parent (`firstmate` or the derived `2🏴‍☠️-<id>` label); existing ambiguous or manually interleaved layouts degrade with a warning instead of being rewritten.
+- Clean projected creates form the exact-parent contiguous child block described above; existing ambiguous or manually interleaved layouts degrade with a warning instead of being rewritten.
 - Existing live or ambiguous projected spaces are never force-renamed, moved, or promoted from tabs into the new topology.
 - A same-identity Herdr restart retains its projected space only when every exact version 2 binding and agent-absence check agrees.
 - Any missing or ambiguous binding degrades to the ordinary flat home workspace without rewriting the old space.
@@ -594,10 +595,10 @@ Herdr persists this metadata to disk per named session, independent of the live 
 What does NOT survive is the underlying shell/agent process inside each pane (a fresh shell starts in its place) and each pane's live `agent_status` (resets to unknown).
 
 P2 verified this in the single-workspace shape only.
-Re-verified here in the MULTI-workspace shape (P3, workspace-per-home): with two coexisting workspaces (a `firstmate` and a `2ndmate-<secondmate-id>`, each with its own tab/pane) in one isolated session, a `session stop` + fresh server restart preserved BOTH workspaces' ids and labels, and BOTH tasks' pane ids, exactly - automated in `tests/fm-backend-herdr-smoke.test.sh`'s restart-stability section.
+Re-verified here in the MULTI-workspace shape (P3, workspace-per-home): with two coexisting workspaces (`firstmate` and `2🏴‍☠️-smoketest-sm1`, each with its own tab/pane) in one isolated session, a `session stop` + fresh server restart preserved BOTH workspaces' ids and labels, and BOTH tasks' pane ids, exactly - automated in `tests/fm-backend-herdr-smoke.test.sh`'s restart-stability section.
 
 Practical consequence: a stored `herdr_pane_id=` remains a valid, fast-path operational target across an ordinary server restart within the same named session, regardless of how many other homes' workspaces coexist in that session.
-The adapter still implements label-based recovery (`fm_backend_herdr_list_live`), both for a differently-configured or freshly-created session where old ids would not exist at all, and as the more defensive default in general.
+The adapter still recovers tasks by their `fm-<id>` tab labels within the current home's resolved workspace (`fm_backend_herdr_list_live`), while secondmate workspace resolution follows the exact-binding and legacy-adoption contract documented under "Label collisions" above.
 
 ## Respawn idempotency: a restored task tab is a husk, not a duplicate
 
