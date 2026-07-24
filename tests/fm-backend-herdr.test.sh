@@ -1795,29 +1795,87 @@ test_workspace_find_rejects_stale_session_incarnation() {
   pass "Herdr workspace bindings: deleted and recreated sessions invalidate stale authority"
 }
 
-test_default_session_recreation_rotates_portable_incarnation() {
+test_session_state_replacement_preserves_portable_incarnation() {
   local dir log resp fb home binding before after out replacement
-  dir="$TMP_ROOT/default-session-recreated"; mkdir -p "$dir/responses"
+  dir="$TMP_ROOT/session-state-replaced"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/default-session-recreated-home"; mkdir -p "$home/state"
-  printf 'recreated-secondmate\n' > "$home/.fm-secondmate-home"
+  home="$TMP_ROOT/session-state-replaced-home"; mkdir -p "$home/state"
+  printf 'state-replaced-secondmate\n' > "$home/.fm-secondmate-home"
   fb=$(make_herdr_fakebin "$dir")
-  binding=$(herdr_workspace_record_path "$home" .herdr-workspace default)
-  herdr_write_workspace_record "$binding" recreated-secondmate default w7 "$dir"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  herdr_write_workspace_record "$binding" state-replaced-secondmate fmtest w7 "$dir"
   before=$(sed -n 's/^session_incarnation=//p' "$binding")
-  replacement="$dir/session-incarnation/session.recreated"
+  replacement="$dir/session-incarnation/session.updated"
   printf '{"version":3}\n' > "$replacement"
   mv -f "$replacement" "$dir/session-incarnation/session.json"
-  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"2ndmate-recreated-secondmate"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"manually renamed"}]}}\n' > "$resp/1.out"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find default' "$ROOT")
-  [ -z "$out" ] \
-    || fail "default session recreation reused stale workspace authority: '$out'"
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ "$out" = w7 ] \
+    || fail "ordinary session state replacement invalidated exact workspace authority: '$out'"
   after=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_session_incarnation_prepare default' "$ROOT")
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_session_incarnation_prepare fmtest' "$ROOT")
+  [ "$after" = "$before" ] \
+    || fail "ordinary session state replacement rotated its incarnation token"
+  pass "Herdr workspace bindings: atomic session state replacement preserves exact authority"
+}
+
+test_session_directory_recreation_rotates_portable_incarnation() {
+  local dir log resp fb home binding before after out deleted
+  dir="$TMP_ROOT/session-directory-recreated"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/session-directory-recreated-home"; mkdir -p "$home/state"
+  printf 'recreated-secondmate\n' > "$home/.fm-secondmate-home"
+  fb=$(make_herdr_fakebin "$dir")
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  herdr_write_workspace_record "$binding" recreated-secondmate fmtest w7 "$dir"
+  before=$(sed -n 's/^session_incarnation=//p' "$binding")
+  deleted="$dir/session-incarnation.deleted"
+  mv "$dir/session-incarnation" "$deleted"
+  mkdir "$dir/session-incarnation"
+  printf '{}\n' > "$dir/session-incarnation/session.json"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"unrelated recreated-session workspace"}]}}\n' > "$resp/1.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ -z "$out" ] \
+    || fail "session directory recreation reused stale workspace authority: '$out'"
+  after=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_session_incarnation_prepare fmtest' "$ROOT")
   [ "${#after}" -eq 64 ] && [ "$after" != "$before" ] \
-    || fail "recreated default session did not rotate its incarnation token"
-  pass "Herdr workspace bindings: default session recreation rotates exact authority"
+    || fail "recreated named session did not rotate its incarnation token"
+  pass "Herdr workspace bindings: named session recreation rotates exact authority"
+}
+
+test_session_incarnation_initialization_has_one_winner() {
+  local dir log resp fb output pids pid token tokens leftovers
+  dir="$TMP_ROOT/incarnation-single-winner"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  pids=
+  for output in "$dir"/token.{1..8}; do
+    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_session_incarnation_prepare fmtest' "$ROOT" \
+      > "$output" &
+    pids="$pids $!"
+  done
+  for pid in $pids; do
+    wait "$pid" || fail "concurrent session incarnation initialization failed"
+  done
+  tokens=
+  for output in "$dir"/token.{1..8}; do
+    token=$(cat "$output")
+    [ "${#token}" -eq 64 ] \
+      || fail "concurrent session incarnation initialization returned a malformed token"
+    case "$token" in *[!0-9a-f]*) fail "concurrent session incarnation initialization returned a malformed token" ;; esac
+    tokens="${tokens}${token}
+"
+  done
+  [ "$(printf '%s' "$tokens" | sort -u | wc -l | tr -d '[:space:]')" = 1 ] \
+    || fail "concurrent session incarnation initialization published multiple tokens"
+  leftovers=$(find "$dir/session-incarnation" -name '.firstmate-session-token.*' -print)
+  [ -z "$leftovers" ] \
+    || fail "concurrent session incarnation initialization left temporary files"
+  pass "Herdr workspace bindings: concurrent incarnation initialization has one winner"
 }
 
 test_session_incarnation_does_not_require_birthtime_stat() {
@@ -3691,7 +3749,9 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_uses_exact_binding_when_display_labels_collide
 test_workspace_find_accepts_manually_renamed_bound_workspace
 test_workspace_find_rejects_stale_session_incarnation
-test_default_session_recreation_rotates_portable_incarnation
+test_session_state_replacement_preserves_portable_incarnation
+test_session_directory_recreation_rotates_portable_incarnation
+test_session_incarnation_initialization_has_one_winner
 test_session_incarnation_does_not_require_birthtime_stat
 test_workspace_records_are_isolated_per_session
 test_workspace_find_adopts_one_legacy_label_only

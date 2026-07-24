@@ -103,7 +103,6 @@ FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 FM_BACKEND_HERDR_WORKSPACE_BINDING=".herdr-workspace"
 FM_BACKEND_HERDR_WORKSPACE_RECOVERY=".herdr-workspace-recovery"
 FM_BACKEND_HERDR_SESSION_TOKEN=".firstmate-session-incarnation-v1"
-FM_BACKEND_HERDR_SESSION_ANCHOR=".firstmate-session-incarnation-v1.anchor"
 FM_BACKEND_HERDR_PROJECTION_PARENT_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)$'
 FM_BACKEND_HERDR_PROJECTION_LEGACY_CHILD_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)/.+ · p:[A-Za-z0-9_-]{22}$'
 # The default-off presentation projection is intentionally separate from the
@@ -218,15 +217,10 @@ fm_backend_herdr_session_dir() {  # <session>
 }
 
 fm_backend_herdr_session_incarnation() {  # <session>
-  local session=$1 dir session_file token_file anchor_file token
+  local session=$1 dir token_file token
   dir=$(fm_backend_herdr_session_dir "$session") || return 1
-  session_file="$dir/session.json"
   token_file="$dir/$FM_BACKEND_HERDR_SESSION_TOKEN"
-  anchor_file="$dir/$FM_BACKEND_HERDR_SESSION_ANCHOR"
-  [ -f "$session_file" ] || return 1
   [ -f "$token_file" ] && [ ! -L "$token_file" ] || return 1
-  [ -f "$anchor_file" ] && [ ! -L "$anchor_file" ] || return 1
-  [ "$session_file" -ef "$anchor_file" ] || return 1
   token=$(cat "$token_file" 2>/dev/null) || return 1
   [ "${#token}" -eq 64 ] || return 1
   case "$token" in *[!0-9a-f]*) return 1 ;; esac
@@ -234,48 +228,34 @@ fm_backend_herdr_session_incarnation() {  # <session>
 }
 
 fm_backend_herdr_session_incarnation_prepare() {  # <session>
-  local session=$1 incarnation dir session_file token_file anchor_file token_tmp anchor_tmp token path
+  local session=$1 incarnation dir token_file token_tmp token
   if incarnation=$(fm_backend_herdr_session_incarnation "$session"); then
     printf '%s' "$incarnation"
     return 0
   fi
   dir=$(fm_backend_herdr_session_dir "$session") || return 1
-  session_file="$dir/session.json"
   token_file="$dir/$FM_BACKEND_HERDR_SESSION_TOKEN"
-  anchor_file="$dir/$FM_BACKEND_HERDR_SESSION_ANCHOR"
-  [ -f "$session_file" ] || return 1
-  for path in "$token_file" "$anchor_file"; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
-      { [ -f "$path" ] || [ -L "$path" ]; } && [ ! -d "$path" ] || return 1
-    fi
-  done
+  if [ -e "$token_file" ] || [ -L "$token_file" ]; then
+    return 1
+  fi
   token=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null \
     | od -An -tx1 \
     | tr -d ' \r\n') || return 1
   [ "${#token}" -eq 64 ] || return 1
   case "$token" in *[!0-9a-f]*) return 1 ;; esac
   token_tmp=$(mktemp "$dir/.firstmate-session-token.XXXXXX") || return 1
-  anchor_tmp=$(mktemp "$dir/.firstmate-session-anchor.XXXXXX") \
-    || { rm -f "$token_tmp"; return 1; }
   chmod 0600 "$token_tmp" \
-    || { rm -f "$token_tmp" "$anchor_tmp"; return 1; }
+    || { rm -f "$token_tmp"; return 1; }
   if ! printf '%s\n' "$token" > "$token_tmp"; then
-    rm -f "$token_tmp" "$anchor_tmp"
+    rm -f "$token_tmp"
     return 1
   fi
-  rm -f "$anchor_tmp"
-  if ! ln -L "$session_file" "$anchor_tmp"; then
-    rm -f "$token_tmp" "$anchor_tmp"
-    return 1
+  if ! ln "$token_tmp" "$token_file" 2>/dev/null; then
+    rm -f "$token_tmp"
+    fm_backend_herdr_session_incarnation "$session"
+    return $?
   fi
-  if ! mv -f "$token_tmp" "$token_file"; then
-    rm -f "$token_tmp" "$anchor_tmp"
-    return 1
-  fi
-  if ! mv -f "$anchor_tmp" "$anchor_file"; then
-    rm -f "$anchor_tmp"
-    return 1
-  fi
+  rm -f "$token_tmp"
   fm_backend_herdr_session_incarnation "$session"
 }
 
