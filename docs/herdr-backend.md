@@ -99,7 +99,7 @@ An absent marker selects the primary label, while malformed or empty present mar
 The adapter preserves exact recorded pane targets for operational selection, so a display-label collision cannot retarget send, inspect, or cleanup operations.
 
 The derived label is presentation and naming input, not the workspace selector.
-The exact workspace-scoping and legacy-adoption contracts are owned by "Label collisions" and "No forced migration" below.
+The exact workspace-scoping and legacy-record migration contracts are owned by "Label collisions" and "No forced migration" below.
 
 ### The one wrinkle: a `--secondmate` spawn is launched BY the primary
 
@@ -126,26 +126,29 @@ Once a workspace exists, spawning - primary or secondmate, workspace or tab - sh
 ### Label collisions: display is not operational identity
 
 Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-verified for workspaces specifically in this pass: creating a second workspace with an already-used label succeeds and produces two workspaces sharing that label).
-Secondmate homes therefore persist their exact workspace id and durable marker id in a home-local, session-keyed `state/.herdr-workspace-<digest>` binding instead of selecting by the suffix-stripped display label.
+Secondmate homes therefore use an atomic Firstmate-owned identity generation under `state/.herdr-workspace-identity-v1-<session-digest>-<random-token>` instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
-One named session's binding cannot overwrite another's, and a manually renamed workspace remains selected through its exact binding because labels are presentation-only.
-Each version 5 binding records both the session directory's atomically initialized Firstmate token and a random 128-bit workspace token carried only in Firstmate-created pane environments.
+Each record binds the durable secondmate id, one random 128-bit identity token, the physical Herdr named-session directory incarnation, and the exact response-derived workspace id.
+The mode-`0400` prepared record is published before workspace discovery or creation and advances atomically to a mode-`0400` bound record after an exact workspace id exists.
+Bound generations are never retargeted or deleted.
+If the workspace disappears or the named-session directory incarnation changes, the old generation remains read-only and a new generation may create a parent only after every exact old workspace is absent or every exact old pane is proved agent-free.
+One named session's identity cannot overwrite another's, and a manually renamed workspace remains selected by exact id because labels are presentation-only.
 Secondmate task tabs retain their exact logical `fm-<id>` labels.
-After a Herdr restart, exact home-local task metadata can recover the workspace and initialize a fresh non-display token without trusting its presentation label or a reused workspace id.
-This live witness is independent of Herdr's delayed and replace-in-place `session.json` persistence, mutable `identity_cwd`, and supported state-file symlinks.
-Deleting a session removes its session token, while empty-state recreation or workspace-id reuse lacks the old live pane token and invalidates stale binding and recovery authority.
+No ownership marker is written into the Herdr session directory or pane environment.
+Task metadata, cwd, tab labels, workspace labels, and projected workspaces never infer parent ownership.
+The incarnation hash uses the physical named-session directory object, so ordinary replace-in-place `session.json` persistence does not rotate it while session deletion and recreation does.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
-Each session's `state/.herdr-workspace-recovery-<digest>` record retains exact workspace and seeded-tab ids from creation until a task tab is created and the safely revalidated, single-pane, agent-free default tab is confirmed pruned.
-The primary home's established `firstmate` label lookup remains unchanged.
+The same bound identity record retains exact seeded-tab and pane ids for conservative default-tab pruning; no second mutable recovery record exists.
+The primary home's compatibility lookup still uses `firstmate`, but now requires exactly one matching workspace and fails closed on ambiguity.
 
 ### No forced migration
 
 Existing live tasks are unaffected by this change: a task's meta already records its own `window=`/`herdr_pane_id=` target, which every backend-scoped operation (send/capture/kill/busy-state) resolves directly and never re-derives from a workspace label.
-A new lookup prefers a valid exact home-scoped binding and otherwise reuses exactly one legacy `2ndmate-<id>` workspace without renaming it.
-Ambiguous duplicate legacy labels are left untouched rather than guessed at.
-Adopting or creating a workspace publishes the exact binding for subsequent operations.
-Workspace discovery, identity initialization, creation, and binding publication are serialized per home and named session.
-New workspaces always use the current convention, and no destructive cleanup or manual migration is required for an already-running legacy workspace.
+A valid legacy version 4 or 5 home record can migrate once by its exact workspace id while its old session marker still proves the same incarnation.
+The legacy record and visible workspace label are retained unchanged.
+A legacy label without exact home-owned state is never adopted.
+Identity preparation, exact discovery, creation, and bound publication are serialized per home and named session.
+New workspaces always use the current display convention.
 
 Tab-per-task within each home's own workspace remains the durable default for the reason P2 originally found: attaching once shows every one of that home's tasks as a tab in one tab bar, switchable with `ctrl+b <n>`, matching how a captain already watches a tmux-backed fleet.
 Durable workspace-per-task remains rejected.
@@ -153,8 +156,8 @@ The optional projection accepts a top-level space per clean new task as a dispos
 
 ## Default workspace lifecycle: one per-home workspace, reused
 
-Each home's own workspace (`firstmate` for the primary, or a current-convention or adopted legacy workspace for a secondmate) is created or adopted as needed and reused by each subsequent default-container spawn while it exists.
-`fm_backend_herdr_workspace_ensure` calls `fm_backend_herdr_workspace_find` first and creates a secondmate workspace only when neither its exact binding nor one unambiguous legacy label resolves.
+Each home's own workspace (`firstmate` for the primary, or the exact current identity workspace for a secondmate) is created or resolved as needed and reused by each subsequent default-container spawn while it exists.
+`fm_backend_herdr_workspace_ensure` creates a secondmate workspace only when no current exact identity resolves, no exact legacy record can migrate, and no live or unreadable endpoint remains under an older identity generation.
 Teardown (`fm_backend_herdr_kill`) closes only the task's pane/tab, never the workspace.
 
 ## Optional disposable single-task presentation spaces
@@ -314,7 +317,7 @@ The fix is structural, not another heuristic, and is unit- and E2E-tested: see `
 
 Because closing a workspace's last tab deletes it, a home's workspace does not outlive a fully idle fleet (zero live tasks for that home) - the next spawn's `workspace_find` simply finds nothing and recreates it. Reuse holds across concurrent and sequential tasks; it is not a guarantee that the workspace itself survives the whole session unconditionally.
 
-A workspace outside the primary label, a secondmate home's exact binding, or one unambiguous legacy secondmate label is never adopted, reused, or torn down by firstmate.
+A workspace outside the unique primary label or a secondmate home's exact identity is never adopted, reused, or torn down by firstmate.
 
 ## Target string and meta fields
 
@@ -327,7 +330,7 @@ For a bare unknown non-`fm-` name, Herdr retains the legacy tmux live-window fal
 Herdr tasks additionally record:
 
 - `herdr_session=` - the named herdr session this task's server lives in.
-- `herdr_workspace_id=` - the id of the exact workspace containing this task's endpoint, ordinarily the primary's `firstmate` workspace or a secondmate's current-convention or adopted legacy workspace, and a disposable task workspace when the optional projection succeeds; for reference only, since day-to-day operations use the recorded pane target.
+- `herdr_workspace_id=` - the id of the exact workspace containing this task's endpoint, ordinarily the primary's unique `firstmate` workspace or a secondmate's identity-bound workspace, and a disposable task workspace when the optional projection succeeds; for reference only, since day-to-day operations use the recorded pane target.
 - `herdr_tab_id=` - the task's tab id.
 - `herdr_pane_id=` - the task's pane id, the fast-path operational target.
 
@@ -605,7 +608,7 @@ P2 verified this in the single-workspace shape only.
 Re-verified here in the MULTI-workspace shape (P3, workspace-per-home): with two coexisting workspaces (`firstmate` and `2🏴‍☠️-smoketest-sm1`, each with its own tab/pane) in one isolated session, a `session stop` + fresh server restart preserved BOTH workspaces' ids and labels, and BOTH tasks' pane ids, exactly - automated in `tests/fm-backend-herdr-smoke.test.sh`'s restart-stability section.
 
 Practical consequence: a stored `herdr_pane_id=` remains a valid, fast-path operational target across an ordinary server restart within the same named session, regardless of how many other homes' workspaces coexist in that session.
-The adapter still recovers tasks by their `fm-<id>` tab labels within the current home's resolved workspace (`fm_backend_herdr_list_live`), while secondmate workspace resolution follows the exact-binding and legacy-adoption contract documented under "Label collisions" above.
+The adapter still lists tasks by their `fm-<id>` tab labels only after the current home's exact workspace has resolved (`fm_backend_herdr_list_live`), while secondmate parent resolution follows the identity and legacy-record migration contract documented under "Label collisions" above.
 
 ## Respawn idempotency: a restored task tab is a husk, not a duplicate
 
