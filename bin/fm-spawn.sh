@@ -338,14 +338,19 @@ spawn_herdr_presentation_order_lock_release() {
 }
 
 spawn_herdr_parent_resolve() {
-  local session=$1 home=$2 cwd=${3:-$PWD}
+  local session=$1 home=$2 cwd=${3:-$PWD} status
   HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
-  # Ensure or migrate the parent identity before a presentation child consults
-  # it. This is the only label-based legacy migration path, and the adapter
-  # binds the exact response id before it can order a child beneath it.
-  HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
-    fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null || true)
-  [ -n "$HERDR_PARENT_WORKSPACE_ID" ] || return 0
+  # Secondmate parent migration must establish its exact identity before a
+  # presentation child consults it. Primary homes retain their exactly-one
+  # label ambiguity guard and never create a parent from this resolver.
+  if FM_HOME="$home" fm_backend_herdr_secondmate_id >/dev/null; then
+    HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
+      fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null || true)
+    [ -n "$HERDR_PARENT_WORKSPACE_ID" ] || return 0
+  else
+    status=$?
+    [ "$status" -eq 1 ] || return "$status"
+  fi
   HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
     fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
   if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
