@@ -146,7 +146,8 @@ The primary home's compatibility lookup still uses `firstmate`, but now requires
 Existing live tasks are unaffected by this change: a task's meta already records its own `window=`/`herdr_pane_id=` target, which every backend-scoped operation (send/capture/kill/busy-state) resolves directly and never re-derives from a workspace label.
 A valid legacy version 4 or 5 home record can migrate once by its exact workspace id while its old session marker still proves the same incarnation.
 The legacy record and visible workspace label are retained unchanged.
-A legacy label without exact home-owned state is never adopted.
+When no legacy record exists, one uniquely matching canonical legacy `2ndmate-<durable-id>` label may be adopted once and immediately bound to its exact workspace id.
+Ambiguous canonical legacy labels, current display labels, renamed workspaces, projections, and task metadata never authorize adoption.
 Identity preparation, exact discovery, creation, and bound publication are serialized per home and named session.
 New workspaces always use the current display convention.
 
@@ -235,7 +236,7 @@ An existing journal suppresses another projected create for that task id.
 Before any recovery mutation, Firstmate holds both the task-id spawn lock and the named session's presentation lock.
 The existing metadata must contain one exact Herdr session, workspace, tab, and pane endpoint, and that exact pane plus every token-matched pane must be positively dead or agent-free before flat fallback is safe.
 Only an agent-free pane is eligible for in-place replacement; a missing pane falls back flat because it no longer proves the bound workspace shape.
-A version 2 reclaim additionally requires the same physical home, named session, metadata endpoint, unique token match, exact workspace label, exact single tab and pane, exact unique parent workspace and label, current placement inside that parent's contiguous child block, and one unambiguous non-target focus snapshot.
+A version 2 reclaim additionally requires the same physical home, named session, metadata endpoint, unique token match, exact workspace label, exact single tab and pane, a non-empty current exact parent workspace id matching the journal's parent id and label, current placement inside that parent's contiguous child block, and one unambiguous non-target focus snapshot.
 The replacement tab is created first in the exact bound workspace with `--no-focus`, its response-derived tab and pane identities are verified, and the old agent-free pane is checked again immediately before an exact focus-preserving close.
 After the old pane is confirmed gone and the workspace converges to exactly the replacement tab and pane, the version 2 journal advances atomically to the new endpoint before metadata publication and launch handoff.
 A replacement failure rolls back only the exact response-derived new pane when focus-safe verification permits it.

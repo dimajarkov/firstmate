@@ -338,25 +338,29 @@ spawn_herdr_presentation_order_lock_release() {
 }
 
 spawn_herdr_parent_resolve() {
-  local session=$1 home=$2 cwd=${3:-$PWD} status
-  HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
+  local session=$1 home=$2 cwd=${3:-$PWD} status parent_label parent_workspace_id
+  HERDR_PARENT_LABEL=""
+  HERDR_PARENT_WORKSPACE_ID=""
+  parent_label=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
   # Secondmate parent migration must establish its exact identity before a
   # presentation child consults it. Primary homes retain their exactly-one
   # label ambiguity guard and never create a parent from this resolver.
   if FM_HOME="$home" fm_backend_herdr_secondmate_id >/dev/null; then
-    HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
-      fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null || true)
-    [ -n "$HERDR_PARENT_WORKSPACE_ID" ] || return 0
+    parent_workspace_id=$(FM_HOME="$home" \
+      fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null) || return $?
+    [ -n "$parent_workspace_id" ] || return 1
   else
     status=$?
     [ "$status" -eq 1 ] || return "$status"
   fi
-  HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
-    fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
-  if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
-    HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id \
-      "$session" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")
-  fi
+  parent_workspace_id=$(FM_HOME="$home" \
+    fm_backend_herdr_workspace_find "$session" 2>/dev/null) || return $?
+  [ -n "$parent_workspace_id" ] || return 1
+  parent_label=$(fm_backend_herdr_workspace_label_for_id \
+    "$session" "$parent_workspace_id" 2>/dev/null) || return $?
+  [ -n "$parent_label" ] || return 1
+  HERDR_PARENT_LABEL=$parent_label
+  HERDR_PARENT_WORKSPACE_ID=$parent_workspace_id
 }
 
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
@@ -955,7 +959,7 @@ case "$BACKEND" in
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_WORKSPACE_ID" "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in

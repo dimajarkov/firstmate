@@ -1644,7 +1644,7 @@ test_projection_reclaim_refusal_matrix_is_non_mutating() {
       . "$ROOT/bin/backends/herdr.sh"
       fm_backend_herdr_cli() { printf "%s\n" "$*" >> "$MUTATIONS"; return 1; }
       run_case() {
-        mode=$1; journal=$2; home=$3
+        mode=$1; journal=$2; home=$3; current_parent=${4:-w1}
         fm_backend_herdr_projection_live_binding_matches() {
           [ "$mode" != ambiguous ]
         }
@@ -1661,7 +1661,8 @@ test_projection_reclaim_refusal_matrix_is_non_mutating() {
         }
         set +e
         fm_backend_herdr_projection_reclaim_task \
-          fmtest "$journal" refusal-r1 "$home" w2 w2:t2 w2:p2 firstmate fm-refusal-r1 /tmp/project \
+          fmtest "$journal" refusal-r1 "$home" w2 w2:t2 w2:p2 \
+          "$current_parent" firstmate fm-refusal-r1 /tmp/project \
           >/dev/null 2>&1
         rc=$?
         set -e
@@ -1669,12 +1670,13 @@ test_projection_reclaim_refusal_matrix_is_non_mutating() {
       }
       run_case legacy "$LEGACY" "$HOME_A"
       run_case cross-home "$JOURNAL" "$HOME_B"
+      run_case parent-mismatch "$JOURNAL" "$HOME_A" w9
       run_case ambiguous "$JOURNAL" "$HOME_A"
       run_case live "$JOURNAL" "$HOME_A"
       run_case unknown "$JOURNAL" "$HOME_A"
       run_case focus-unknown "$JOURNAL" "$HOME_A"
     ')
-  [ "$out" = $'legacy:2\ncross-home:2\nambiguous:2\nlive:1\nunknown:1\nfocus-unknown:2' ] \
+  [ "$out" = $'legacy:2\ncross-home:2\nparent-mismatch:2\nambiguous:2\nlive:1\nunknown:1\nfocus-unknown:2' ] \
     || fail "reclaim refusal matrix returned wrong decisions: $out"
   [ ! -s "$mutation_log" ] \
     || fail "legacy, cross-home, ambiguous, live/unknown, or focus-unknown refusal mutated Herdr: $(cat "$mutation_log")"
@@ -1731,7 +1733,7 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
     bash -c '
       . "$0/bin/backends/herdr.sh"
       fm_backend_herdr_projection_reclaim_task \
-        fmtest "$1" fm-hibit-r1 "$2" w2 w2:t2 w2:p2 firstmate fm-fm-hibit-r1 /tmp/project || exit 1
+        fmtest "$1" fm-hibit-r1 "$2" w2 w2:t2 w2:p2 w1 firstmate fm-fm-hibit-r1 /tmp/project || exit 1
       printf "%s %s" "$FM_BACKEND_HERDR_PROJECTION_TAB_ID" "$FM_BACKEND_HERDR_PROJECTION_PANE_ID"
     ' "$ROOT" "$journal" "$home") || fail "exact agent-free projection reclaim failed"
   [ "$out" = "w2:t3 w2:p3" ] || fail "reclaim did not return exact replacement ids: $out"
@@ -1941,6 +1943,23 @@ test_workspace_identity_migrates_legacy_exact_record_without_labels() {
   pass "Herdr home identity: legacy v4/v5 state migrates by exact id without trusting presentation labels"
 }
 
+test_workspace_identity_migrates_one_canonical_legacy_label_once() {
+  local dir log resp fb home out identity
+  dir="$TMP_ROOT/identity-legacy-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/identity-legacy-label-home"; mkdir -p "$home/state"; printf 'legacy-label-secondmate\n' > "$home/.fm-secondmate-home"
+  fb=$(make_herdr_fakebin "$dir")
+  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"2ndmate-legacy-label-secondmate"}]}}\n' > "$resp/3.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT")
+  [ "$out" = $'fmtest:w7\t' ] || fail "unique canonical legacy label did not migrate once: '$out'"
+  assert_not_contains "$(cat "$log")" $'\x1fworkspace\x1fcreate' "canonical legacy label migration created a replacement workspace"
+  identity=$(find "$home/state" -name '.herdr-workspace-identity-v1-*' -type f)
+  [ "$(sed -n 's/^workspace_id=//p' "$identity")" = w7 ] || fail "canonical legacy label migration did not bind exact workspace w7"
+  pass "Herdr home identity: one unique canonical legacy label migrates into exact identity"
+}
+
 test_workspace_identity_serializes_discovery_create_publication() {
   local dir log state fb home first second first_pid second_pid creates records
   dir="$TMP_ROOT/identity-serialized"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
@@ -2074,7 +2093,7 @@ test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
 }
 
 test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
-  local dir log resp fb home resolver out
+  local dir log resp fb home resolver out status
   dir="$TMP_ROOT/spawn-primary-parent"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; home="$dir/home"; mkdir -p "$home"; : > "$log"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/1.out"
@@ -2087,27 +2106,59 @@ test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
     FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
       . "$0/bin/backends/herdr.sh"
       eval "$FM_SPAWN_PARENT_RESOLVER"
-      spawn_herdr_parent_resolve fmtest "$1"
+      spawn_herdr_parent_resolve fmtest "$1" || exit $?
       printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
-    ' "$ROOT" "$home")
-  [ "$out" = $'firstmate\t' ] || fail "duplicate primary labels selected an unrelated parent: '$out'"
+    ' "$ROOT" "$home" 2>/dev/null)
+  status=$?
+  [ "$status" -ne 0 ] && [ -z "$out" ] || fail "duplicate primary labels did not fail closed: '$out'"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
       . "$0/bin/backends/herdr.sh"
       eval "$FM_SPAWN_PARENT_RESOLVER"
-      spawn_herdr_parent_resolve fmtest "$1"
+      spawn_herdr_parent_resolve fmtest "$1" || exit $?
       printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
-    ' "$ROOT" "$home")
-  [ "$out" = $'firstmate\t' ] || fail "an absent primary label selected an unrelated parent: '$out'"
+    ' "$ROOT" "$home" 2>/dev/null)
+  status=$?
+  [ "$status" -ne 0 ] && [ -z "$out" ] || fail "an absent primary label did not fail closed: '$out'"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
       . "$0/bin/backends/herdr.sh"
       eval "$FM_SPAWN_PARENT_RESOLVER"
-      spawn_herdr_parent_resolve fmtest "$1"
+      spawn_herdr_parent_resolve fmtest "$1" || exit $?
       printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
     ' "$ROOT" "$home")
   [ "$out" = $'firstmate\tw2' ] || fail "one exact primary label did not resolve its workspace: '$out'"
   pass "fm-spawn: primary presentation requires exactly one matching parent workspace"
+}
+
+test_spawn_secondmate_parent_resolution_propagates_exact_identity_failures() {
+  local resolver out status
+  resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
+  out=$(FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    eval "$FM_SPAWN_PARENT_RESOLVER"
+    fm_backend_herdr_workspace_label() { printf "2🏴‍☠️-exact"; }
+    fm_backend_herdr_secondmate_id() { printf exact-secondmate; }
+    fm_backend_herdr_workspace_ensure() { return 2; }
+    fm_backend_herdr_workspace_find() { printf w1; }
+    spawn_herdr_parent_resolve fmtest "$1" || exit $?
+    printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
+  ' "$ROOT" "$TMP_ROOT" 2>/dev/null)
+  status=$?
+  [ "$status" -ne 0 ] && [ -z "$out" ] || fail "secondmate identity ensure failure was suppressed: '$out'"
+  out=$(FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    eval "$FM_SPAWN_PARENT_RESOLVER"
+    fm_backend_herdr_workspace_label() { printf "2🏴‍☠️-exact"; }
+    fm_backend_herdr_secondmate_id() { printf exact-secondmate; }
+    fm_backend_herdr_workspace_ensure() { printf w1; }
+    fm_backend_herdr_workspace_find() { return 2; }
+    spawn_herdr_parent_resolve fmtest "$1" || exit $?
+    printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
+  ' "$ROOT" "$TMP_ROOT" 2>/dev/null)
+  status=$?
+  [ "$status" -ne 0 ] && [ -z "$out" ] || fail "secondmate exact parent lookup failure was suppressed: '$out'"
+  pass "fm-spawn: secondmate parent resolution propagates exact identity failures"
 }
 
 # --- list_live: scoped to this home's own workspace only ---------------------
@@ -3590,6 +3641,7 @@ test_workspace_identity_duplicate_current_generation_fails_closed
 test_workspace_identity_incarnation_change_refuses_live_old_endpoint
 test_workspace_identity_incarnation_change_creates_after_dead_proof
 test_workspace_identity_migrates_legacy_exact_record_without_labels
+test_workspace_identity_migrates_one_canonical_legacy_label_once
 test_workspace_identity_serializes_discovery_create_publication
 test_workspace_identity_rolls_back_exact_create_on_bind_failure
 test_workspace_identity_state_symlinks_are_bounded_to_home
@@ -3597,6 +3649,7 @@ test_secondmate_task_labels_remain_exact_with_home_identity
 test_primary_workspace_ambiguity_fails_closed
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_spawn_primary_parent_resolution_requires_one_exact_workspace
+test_spawn_secondmate_parent_resolution_propagates_exact_identity_failures
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
 test_normalize_key
