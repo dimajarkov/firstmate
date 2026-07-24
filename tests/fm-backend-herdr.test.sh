@@ -258,13 +258,29 @@ test_secondmate_marker_parser_is_shared_by_current_and_legacy_labels() {
   pass "secondmate marker parsing: current and legacy labels share one normalized durable id"
 }
 
-test_workspace_label_empty_marker_falls_back_to_primary() {
-  local home
+test_workspace_label_malformed_marker_fails_closed() {
+  local home out status called
   home="$TMP_ROOT/secondmate-home-empty"; mkdir -p "$home"
   : > "$home/.fm-secondmate-home"
-  out=$( FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT" )
-  [ "$out" = "firstmate" ] || fail "an empty/unreadable marker should fall back to 'firstmate', got '$out'"
-  pass "fm_backend_herdr_workspace_label: an empty marker file falls back to the primary label 'firstmate'"
+  out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an empty marker must fail closed instead of selecting firstmate"
+  [ -z "$out" ] || fail "an empty marker emitted an operational label: '$out'"
+  printf 'bad/name\n' > "$home/.fm-secondmate-home"
+  out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unsafe marker must fail closed instead of selecting firstmate"
+  [ -z "$out" ] || fail "an unsafe marker emitted an operational label: '$out'"
+  called="$home/herdr-called"
+  out=$(FM_HOME="$home" FM_HERDR_CALLED="$called" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_cli() { : > "$FM_HERDR_CALLED"; }
+    fm_backend_herdr_workspace_ensure fmtest /tmp
+  ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "workspace ensure accepted an unsafe present marker"
+  [ ! -e "$called" ] || fail "workspace ensure contacted Herdr after malformed marker validation failed"
+  pass "fm_backend_herdr_workspace_label: malformed present markers fail closed"
 }
 
 test_workspace_label_terminal_suffix_unicode_and_invalid_marker() {
@@ -279,10 +295,7 @@ test_workspace_label_terminal_suffix_unicode_and_invalid_marker() {
   printf '%s\n' '-secondmate' > "$home/.fm-secondmate-home"
   out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT")
   [ "$out" = "2🏴‍☠️--secondmate" ] || fail "empty suffix-derived marker should retain the durable id, got '$out'"
-  printf 'bad/name\n' > "$home/.fm-secondmate-home"
-  out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT")
-  [ "$out" = "firstmate" ] || fail "invalid marker should fall back safely, got '$out'"
-  pass "fm_backend_herdr_workspace_label: simplifies only terminal suffixes and handles Unicode and invalid markers deterministically"
+  pass "fm_backend_herdr_workspace_label: simplifies only terminal suffixes and preserves Unicode"
 }
 
 test_workspace_label_different_secondmates_get_different_labels() {
@@ -1629,6 +1642,43 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''rename' "legacy adoption renamed the workspace"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "legacy adoption created a replacement workspace"
   pass "fm_backend_herdr_workspace_ensure: legacy workspace adoption publishes an exact binding without migration"
+}
+
+test_workspace_binding_accepts_only_in_home_state_symlinks() {
+  local home inside outside out status
+  home="$TMP_ROOT/binding-symlink-home"; inside="$home/runtime/state"; outside="$TMP_ROOT/binding-symlink-outside"
+  mkdir -p "$inside" "$outside"
+  printf 'symlink-secondmate\n' > "$home/.fm-secondmate-home"
+  ln -s runtime/state "$home/state"
+  FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish fmtest w-safe' "$ROOT" \
+    || fail "an in-home state symlink should accept binding publication"
+  [ "$(sed -n 's/^workspace_id=//p' "$inside/.herdr-workspace")" = w-safe ] \
+    || fail "the in-home state symlink did not receive the exact workspace binding"
+  rm "$home/state"
+  ln -s "$outside" "$home/state"
+  out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish fmtest w-unsafe' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an out-of-home state symlink should refuse binding publication"
+  [ ! -e "$outside/.herdr-workspace" ] || fail "unsafe state symlink publication escaped the secondmate home"
+  pass "Herdr workspace binding: in-home state symlinks work and escaping symlinks fail closed"
+}
+
+test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure() {
+  local dir log resp fb out status home
+  dir="$TMP_ROOT/binding-rollback"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-rollback-home"; mkdir -p "$home/state"; printf 'rollback-secondmate\n' > "$home/.fm-secondmate-home"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2🏴‍☠️-rollback"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "late binding publication failure should fail workspace ensure"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f''w9:p1' \
+    "late binding publication failure did not close the exact response-created root pane"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close' \
+    "late binding publication failure used broad workspace-close authority"
+  pass "fm_backend_herdr_workspace_ensure: late binding failure rolls back only the exact created pane"
 }
 
 test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
@@ -3063,7 +3113,7 @@ test_workspace_label_primary_home_no_marker
 test_workspace_label_secondmate_home_uses_marker_id
 test_workspace_label_secondmate_marker_trims_whitespace
 test_secondmate_marker_parser_is_shared_by_current_and_legacy_labels
-test_workspace_label_empty_marker_falls_back_to_primary
+test_workspace_label_malformed_marker_fails_closed
 test_workspace_label_terminal_suffix_unicode_and_invalid_marker
 test_workspace_label_different_secondmates_get_different_labels
 test_cli_helper_sets_env_and_appends_trailing_session_flag
@@ -3122,6 +3172,8 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_uses_exact_binding_when_display_labels_collide
 test_workspace_find_adopts_one_legacy_label_only
 test_workspace_ensure_binds_legacy_workspace_without_renaming
+test_workspace_binding_accepts_only_in_home_state_symlinks
+test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target

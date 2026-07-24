@@ -95,7 +95,7 @@ Workspace-per-HOME fixes that while keeping tab-per-task's original human-watchi
 This is the standard derived display convention, not a local preference, and needs no per-home configuration.
 Only a terminal `-secondmate` is omitted, so the durable marker remains the routing and endpoint identity.
 Because the label is derived from the home's own durable identity - the marker file lives at the home's root, not in an environment variable passed down a call chain - it is automatically stable across every respawn, recovery, and firstmate restart for the life of that home, with no extra bookkeeping required.
-Malformed or empty marker content falls back to the primary label rather than manufacturing an unsafe display label.
+An absent marker selects the primary label, while malformed or empty present marker content refuses workspace resolution instead of routing into the primary workspace.
 The adapter preserves exact recorded pane targets for operational selection, so a display-label collision cannot retarget send, inspect, or cleanup operations.
 
 Every workspace-scoped adapter path reads this SAME resolution: find/ensure (`fm_backend_herdr_workspace_find`/`_ensure`), tab create and its duplicate-label check (`fm_backend_herdr_create_task`), list-live recovery (`fm_backend_herdr_list_live`), and pane-for-tab (`fm_backend_herdr_pane_for_tab`, via the workspace id these resolve).
@@ -128,6 +128,7 @@ Once a workspace exists, spawning - primary or secondmate, workspace or tab - sh
 Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-verified for workspaces specifically in this pass: creating a second workspace with an already-used label succeeds and produces two workspaces sharing that label).
 Secondmate homes therefore persist their exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
+An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
 The primary home's established `firstmate` label lookup remains unchanged.
 
 ### No forced migration
