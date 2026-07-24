@@ -2092,6 +2092,8 @@ test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
   pass "fm-spawn: exact parent resolution occurs only after server ensure and under the presentation lock"
 }
 
+# Literals intentionally match unexpanded shell source.
+# shellcheck disable=SC2016
 test_spawn_parent_resolution_failure_preserves_flat_recovery() {
   local recovery resolve_line inspect_line reclaim_gate_line
   recovery=$(sed -n \
