@@ -129,7 +129,7 @@ Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-veri
 Secondmate homes therefore persist their exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
-If exact cleanup after a late binding-publication failure cannot remove the response-created workspace, `state/.herdr-workspace-recovery` retains its exact id so the next lookup adopts it instead of creating another.
+If exact cleanup after a late binding-publication failure cannot verify removal of the response-created workspace, `state/.herdr-workspace-recovery` retains its exact workspace and seeded-tab ids so the next lookup adopts it instead of creating another and can still prune the safely revalidated default tab.
 The primary home's established `firstmate` label lookup remains unchanged.
 
 ### No forced migration
@@ -285,10 +285,10 @@ Use a distinct name such as `$want` instead; `tests/fm-backend-herdr.test.sh` gr
 `fm_backend_herdr_create_task` prunes it (best-effort, via `fm_backend_herdr_workspace_prune_seeded_default_tab`) right after creating the first real task tab in a freshly created workspace, never earlier: closing a workspace's LAST tab deletes the whole workspace on real herdr, and immediately after creation the default tab is the only one present.
 
 **The prune target is identified structurally (created-vs-adopted), never by label pattern.**
-`fm_backend_herdr_workspace_ensure` captures the seeded default tab's `tab_id` straight from its OWN `workspace create` response (`.result.tab.tab_id`, verified empirically to be present on the same response as `.result.workspace.workspace_id` - no follow-up `tab list` call is needed) ONLY when that call itself just created the workspace.
-`fm_backend_herdr_container_ensure` threads that id through to its caller as a second field: it echoes `"<session>:<workspace_id>\t<seeded_default_tab_id>"`, the second field empty whenever the workspace was adopted through the primary label, an exact secondmate binding, or one unambiguous legacy label rather than created fresh.
+`fm_backend_herdr_workspace_ensure` captures the seeded default tab's `tab_id` straight from its OWN `workspace create` response (`.result.tab.tab_id`, verified empirically to be present on the same response as `.result.workspace.workspace_id` - no follow-up `tab list` call is needed) and preserves that response-derived authority through a pending recovery record.
+`fm_backend_herdr_container_ensure` threads that id through to its caller as a second field: it echoes `"<session>:<workspace_id>\t<seeded_default_tab_id>"`, with the second field populated only for a fresh create or a response-derived recovery record whose exact workspace, home, session, tab id, and default label still match.
 `fm_backend_herdr_create_task` accepts that value as an explicit 4th argument and is the ONLY place allowed to act on it; it never re-derives "prunable" from a tab's label or the workspace's tab count.
-An adopted workspace's caller always passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an adopted workspace's tabs to be pruned, regardless of how they are labeled.
+An ordinary adopted workspace's caller passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an unrelated adopted workspace's tabs to be pruned, regardless of how they are labeled.
 
 Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present, re-checks it is still labeled `1`, and refuses if its pane's `agent get` reports `agent_status: working` (herdr's own native agent-state detection) - belt-and-suspenders against a live agent having landed there through some other path.
 
