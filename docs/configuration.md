@@ -27,13 +27,15 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
 The only values it writes are `on` and `off`, each followed by one newline; an absent, unreadable, or unrecognized value defaults to off.
-The `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
+In a primary home, the `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
+In a marked secondmate home, `/calm` refuses the local override and explains that the primary Firstmate manages the preference.
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
 The primary-authoritative secondmate inheritance contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), including its allowlist, safe convergence, quarantine, and generation delivery rules.
 Only `on` and `off` primary values, after surrounding whitespace is stripped, propagate as canonical values.
 An absent or invalid primary value removes the secondmate copy, which Calm interprets as off, so secondmates cannot retain stale presentation settings.
 The inherited file is harmless to Claude, Codex, OpenCode, and Grok because none reads it.
-A mid-session config push persists the preference and asks the secondmate to reread its configuration, but does not claim to change a running Pi transcript: Pi has no supported external extension reload or toggle API for this path, so the preference takes effect when Pi next starts a session.
+A mid-session config push sends Calm-specific framing only to a live secondmate whose metadata records `harness=pi`; Claude, Codex, OpenCode, and Grok homes receive no Calm instruction.
+The Pi notice states that persistence does not change the running transcript because Pi has no supported external extension reload or toggle API for this path, so the preference takes effect when Pi next starts a session.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 

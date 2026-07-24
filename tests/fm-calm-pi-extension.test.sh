@@ -143,7 +143,9 @@ test_home_resolution() {
     "$fixture/project/.pi/extensions/lib" \
     "$fixture/project/node_modules/@earendil-works" \
     "$fixture/override" \
+    "$fixture/secondmate" \
     "$fixture/launch-cwd"
+  printf '%s\n' secondmate > "$fixture/secondmate/.fm-secondmate-home"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
@@ -188,6 +190,7 @@ function registerCalm() {
   return { calmCommand, sessionStart: handlers.get("session_start") };
 }
 
+const notifications = [];
 const context = {
   ui: {
     getEditorText() {
@@ -198,6 +201,9 @@ const context = {
     },
     onTerminalInput() {
       return () => {};
+    },
+    notify(message, level) {
+      notifications.push({ message, level });
     },
     setHiddenThinkingLabel() {},
     setStatus() {},
@@ -226,12 +232,27 @@ if (readFileSync(`${process.env.EXTENSION_HOME}/config/calm`, "utf8") !== "on\n"
 if (existsSync(`${process.cwd()}/config/calm`)) {
   throw new Error("Calm wrote its preference under Pi's launch directory");
 }
+
+process.env.FM_HOME = `${process.env.EXTENSION_HOME}/../secondmate`;
+calm = registerCalm();
+calm.sessionStart({ reason: "startup" }, context);
+await calm.calmCommand.handler("", context);
+if (existsSync(`${process.env.FM_HOME}/config/calm`)) {
+  throw new Error("/calm persisted a local preference in a secondmate home");
+}
+if (
+  notifications.at(-1)?.message !==
+    "Calm is managed by the primary Firstmate in secondmate homes." ||
+  notifications.at(-1)?.level !== "warning"
+) {
+  throw new Error("/calm did not explain primary ownership in a secondmate home");
+}
 JS
 )
   status=$?
   [ "$status" -eq 0 ] || fail "Pi calm home resolution failed: $out"
   [ -z "$out" ] || fail "Pi calm home-resolution test printed output: $out"
-  pass "Pi calm resolves its persistent home independently of Pi's launch directory"
+  pass "Pi calm resolves its persistent home and refuses local secondmate overrides"
 }
 
 test_rendering_and_session_lifecycle() {

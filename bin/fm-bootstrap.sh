@@ -343,12 +343,13 @@ secondmate_sync() {
   # running home, send its literal-content reread instruction pointer so the
   # live agent does not keep applying stale defaults. Spawn/respawn already
   # re-reads at launch and needs no redundant nudge unless files changed after launch.
-  local id home home_real home_lock propagated_homes report reread_out reread_skip_pending
+  local id home home_real home_lock propagated_homes report reread_out reread_skip_pending meta harness
   propagated_homes=""
   SECONDMATE_RESPAWNED_IDS=${SECONDMATE_RESPAWNED_IDS:-}
-  while IFS='|' read -r id home _window _meta; do
+  while IFS='|' read -r id home _window meta; do
     validate_secondmate_home "$id" "$home" || continue
     home_real="$VALIDATED_HOME"
+    harness=$(fm_meta_get "$meta" harness)
     case " $FF_SEEN_HOMES " in
       *" $home_real "*) ;;
       *) continue ;;
@@ -375,7 +376,7 @@ secondmate_sync() {
     esac
     if [ "$reread_skip_pending" -eq 0 ] \
       && fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
-      fm_config_reread_retry_pending "$id" "$home_real" || true
+      fm_config_reread_retry_pending "$id" "$home_real" "$harness" || true
       if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
         echo "CONFIG_REREAD: secondmate $id: send failed: retry instruction queue is full"
         fm_lock_release "$home_lock" || true
@@ -396,7 +397,7 @@ secondmate_sync() {
     if ! reread_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
       FM_STATE_OVERRIDE="$STATE" \
       FM_CONFIG_REREAD_SKIP_PENDING="$reread_skip_pending" \
-      fm_config_send_reread_nudge "$id" "$home_real" "$report" 2>&1); then
+      fm_config_send_reread_nudge "$id" "$home_real" "$report" "$harness" 2>&1); then
       if [ -n "$reread_out" ]; then
         printf '%s\n' "$reread_out"
       else

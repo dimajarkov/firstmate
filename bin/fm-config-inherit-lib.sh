@@ -86,7 +86,10 @@ copy_inheritable_file() {
   fi
   dest_parent=${dest%/*}
   [ -n "$dest_parent" ] && [ "$dest_parent" != "$dest" ] || return 1
-  mkdir -p "$dest_parent" 2>/dev/null || return 1
+  if [ ! -e "$dest_parent" ] && [ ! -L "$dest_parent" ]; then
+    mkdir -p "$dest_parent" 2>/dev/null || return 1
+  fi
+  [ -d "$dest_parent" ] && [ ! -L "$dest_parent" ] || return 1
   tmp=$(mktemp "$dest_parent/.fm-inherit.XXXXXX" 2>/dev/null) || return 1
   if ! cp "$src" "$tmp" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
@@ -416,6 +419,11 @@ calm_destination_safe() {
   [ "$(fm_inherit_file_link_count "$path")" = 1 ]
 }
 
+calm_destination_parent_safe() {
+  local parent=$1
+  [ -d "$parent" ] && [ ! -L "$parent" ]
+}
+
 calm_canonical_sha256() {
   local value=$1
   if command -v shasum >/dev/null 2>&1; then
@@ -442,6 +450,7 @@ calm_quarantine_name() {
 
 calm_quarantine_destination() {
   local dest=$1 parent=$2 hash artifact
+  calm_destination_parent_safe "$parent" || return 1
   calm_destination_safe "$dest" || return 1
   hash=$(fm_inherit_sha256 "$dest") || return 1
   artifact=$(calm_quarantine_name "$parent" "$hash") || return 1
@@ -459,8 +468,10 @@ calm_quarantine_destination() {
 calm_write_destination() {
   local value=$1 dest=$2 parent tmp
   parent=${dest%/*}
-  [ -d "$parent" ] && [ ! -L "$parent" ] || mkdir -p "$parent" 2>/dev/null || return 1
-  [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+  if [ ! -e "$parent" ] && [ ! -L "$parent" ]; then
+    mkdir -p "$parent" 2>/dev/null || return 1
+  fi
+  calm_destination_parent_safe "$parent" || return 1
   tmp=$(umask 077; mktemp "$parent/.fm-calm.XXXXXX" 2>/dev/null) || return 1
   if ! printf '%s\n' "$value" > "$tmp" || ! chmod "$FM_CALM_MODE" "$tmp" 2>/dev/null || ! mv -f -- "$tmp" "$dest" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
@@ -498,6 +509,12 @@ propagate_calm_preference() {
     warn_inheritable_config_skip calm "$dest_config" "$reason"
     record_inheritable_config_result calm skipped "$reason"
     return 0
+  fi
+  if { [ -e "$dest" ] || [ -L "$dest" ]; } && ! calm_destination_parent_safe "$parent"; then
+    reason="unsafe destination directory"
+    warn_inheritable_config_error calm "$parent" "$reason"
+    record_inheritable_config_result calm error "$reason"
+    return 1
   fi
 
   if [ "$source_rc" -eq 0 ]; then
@@ -594,6 +611,14 @@ propagate_inheritable_config() {
         record_inheritable_config_result "$item" skipped "$reason"
         continue
       fi
+      if { [ -e "$dest_config" ] || [ -L "$dest_config" ]; } \
+        && { [ ! -d "$dest_config" ] || [ -L "$dest_config" ]; }; then
+        reason="unsafe destination directory"
+        warn_inheritable_config_error "$item" "$dest_config" "$reason"
+        record_inheritable_config_result "$item" error "$reason"
+        rc=1
+        continue
+      fi
       if [ -L "$dest" ] || [ ! -f "$dest" ] || ! cmp -s "$src" "$dest"; then
         if copy_inheritable_file "$src" "$dest"; then
           record_inheritable_config_result "$item" pushed ""
@@ -611,6 +636,13 @@ propagate_inheritable_config() {
         reason=$(inheritable_config_skip_reason)
         warn_inheritable_config_skip "$item" "$dest_config" "$reason"
         record_inheritable_config_result "$item" skipped "$reason"
+        continue
+      fi
+      if [ ! -d "$dest_config" ] || [ -L "$dest_config" ]; then
+        reason="unsafe destination directory"
+        warn_inheritable_config_error "$item" "$dest_config" "$reason"
+        record_inheritable_config_result "$item" error "$reason"
+        rc=1
         continue
       fi
       # Primary has no value for this item: mirror the absence downstream.
@@ -642,6 +674,7 @@ FM_CONFIG_INHERIT_LOCK_REL="state/.fm-inherited-config.lock"
 # Framing lines for the config-reread instruction. Defaults/rules only - never
 # an enforcement claim, and never a parsed summary of file contents.
 FM_CONFIG_REREAD_FRAMING='These inherited config files changed. Re-read and apply their exact contents at every future intake. They are defaults/rules and do not remove your judgment to choose differently when warranted.'
+FM_CONFIG_CALM_FRAMING='These inherited config files changed. Re-read and apply non-Calm defaults/rules at every future intake; they do not remove your judgment. config/calm is a Pi-only transcript-presentation preference managed by the primary Firstmate. Persistence does not change this live transcript and applies only when the next Pi session starts.'
 
 # fm_config_reread_is_allowlisted_item <item>
 # True only for the declared inheritable config allowlist (bare item name as
@@ -655,13 +688,15 @@ fm_config_reread_is_allowlisted_item() {
   return 1
 }
 
-# fm_config_reread_changed_items <report>
+# fm_config_reread_changed_items <report> [harness]
 # Print bare allowlisted config item names whose report status is "pushed",
-# in FM_INHERITABLE_CONFIG order (deterministic path order). Empty when none.
+# in FM_INHERITABLE_CONFIG order (deterministic path order). Calm is included
+# only for a Pi secondmate. Empty when none.
 fm_config_reread_changed_items() {
-  local report=$1 item status
+  local report=$1 harness=${2:-} item status
   [ -n "$report" ] && [ -f "$report" ] || return 0
   for item in $FM_INHERITABLE_CONFIG; do
+    [ "$item" != calm ] || [ "$harness" = pi ] || continue
     status=$(awk -F '\t' -v item="$item" '$1 == item { print $2; exit }' "$report" 2>/dev/null) || status=""
     [ "$status" = pushed ] || continue
     printf '%s\n' "$item"
@@ -724,12 +759,12 @@ fm_config_reread_retry_queue_is_full() {
 }
 
 fm_config_reread_retry_pending() {
-  local id=$1 dest_home=$2 report retry_out rc
+  local id=$1 dest_home=$2 harness=${3:-} report retry_out rc
   report=$(mktemp "${TMPDIR:-/tmp}/fm-config-reread-retry.XXXXXX" 2>/dev/null) || {
     printf 'CONFIG_REREAD: secondmate %s: send failed: could not create retry report\n' "$id"
     return 1
   }
-  retry_out=$(fm_config_send_reread_nudge "$id" "$dest_home" "$report" 2>&1)
+  retry_out=$(fm_config_send_reread_nudge "$id" "$dest_home" "$report" "$harness" 2>&1)
   rc=$?
   rm -f "$report"
   [ -z "$retry_out" ] || printf '%s\n' "$retry_out"
@@ -770,7 +805,7 @@ fm_config_reread_save_retry_report() {
   printf '%s\n' "$report_path"
 }
 
-# fm_config_write_reread_instruction <dest-home> <report> <instruction-path>
+# fm_config_write_reread_instruction <dest-home> <report> <instruction-path> [harness]
 # After successful propagation, write one instruction from the validated
 # destination state. Includes only changed allowlisted config files, each with
 # relative path, begin/end delimiters, and either the destination file's full
@@ -779,7 +814,8 @@ fm_config_reread_save_retry_report() {
 # changed (or on write failure). Never inlines data/captain-shared.md, SHA
 # values, selected profiles, or any generated interpretation.
 fm_config_write_reread_instruction() {
-  local dest_home=$1 report=$2 instruction_path=$3 item rel dest parent tmp first=1
+  local dest_home=$1 report=$2 instruction_path=$3 harness=${4:-}
+  local item rel dest parent tmp first=1 changed_items framing
   FM_CONFIG_REREAD_FAILED_TEMP=""
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
@@ -789,13 +825,18 @@ fm_config_write_reread_instruction() {
   mkdir -p "$parent" 2>/dev/null || return 1
   tmp=$(umask 077; mktemp "$instruction_path.tmp.XXXXXX" 2>/dev/null) || return 1
   chmod 0600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  changed_items=$(fm_config_reread_changed_items "$report" "$harness")
+  case $'\n'"$changed_items"$'\n' in
+    *$'\ncalm\n'*) framing=$FM_CONFIG_CALM_FRAMING ;;
+    *) framing=$FM_CONFIG_REREAD_FRAMING ;;
+  esac
   while IFS= read -r item; do
     [ -n "$item" ] || continue
     fm_config_reread_is_allowlisted_item "$item" || continue
     rel="config/$item"
     dest="$dest_home/config/$item"
     if [ "$first" = 1 ]; then
-      printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" >> "$tmp" || { rm -f "$tmp"; return 1; }
+      printf '%s\n' "$framing" >> "$tmp" || { rm -f "$tmp"; return 1; }
       first=0
     fi
     {
@@ -810,7 +851,9 @@ fm_config_write_reread_instruction() {
       printf '%s\n' "ABSENT" >> "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     printf '%s\n' "-----END $rel-----" >> "$tmp" || { rm -f "$tmp"; return 1; }
-  done < <(fm_config_reread_changed_items "$report")
+  done <<EOF
+$changed_items
+EOF
   if [ "$first" = 1 ]; then
     rm -f "$tmp"
     return 1
@@ -855,6 +898,35 @@ fm_config_reread_has_pending() {
     [ -f "$pending" ] && [ ! -L "$pending" ] || continue
     return 0
   done
+  return 1
+}
+
+fm_config_reread_instruction_deliverable() {
+  local instruction=$1 harness=${2:-}
+  [ -f "$instruction" ] && [ ! -L "$instruction" ] || return 1
+  if [ "$harness" != pi ] && grep -Fqx 'config/calm' "$instruction" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+fm_config_reread_has_deliverable_pending() {
+  local dest_home=$1 source_home=$2 id=$3 harness=${4:-}
+  local state pending instruction stage report
+  state="$dest_home/${FM_CONFIG_REREAD_INSTRUCTION_PREFIX_REL%/*}"
+  for pending in "$state"/.fm-inherited-config-reread.*.pending; do
+    [ -f "$pending" ] && [ ! -L "$pending" ] || continue
+    instruction=${pending%.pending}
+    fm_config_reread_instruction_deliverable "$instruction" "$harness" && return 0
+  done
+  while IFS= read -r stage; do
+    [ -n "$stage" ] || continue
+    fm_config_reread_instruction_deliverable "$stage" "$harness" && return 0
+  done < <(fm_config_reread_pending_stages "$source_home" "$id")
+  while IFS= read -r report; do
+    [ -n "$report" ] || continue
+    [ -n "$(fm_config_reread_changed_items "$report" "$harness")" ] && return 0
+  done < <(fm_config_reread_pending_reports "$source_home" "$id")
   return 1
 }
 
@@ -945,9 +1017,10 @@ fm_config_reread_send_failure() {
   return 1
 }
 
-# fm_config_reread_send_pointer <id> <instruction-path>
+# fm_config_reread_send_pointer <id> <instruction-path> [harness]
 fm_config_reread_send_pointer() {
-  local id=$1 instruction_path=$2 pending_path selector out rc send_bin message pending_pointer
+  local id=$1 instruction_path=$2 harness=${3:-}
+  local pending_path selector out rc send_bin message pending_pointer
   pending_path="$instruction_path.pending"
   if [ ! -f "$instruction_path" ] || [ -L "$instruction_path" ]; then
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is missing\n' "$id"
@@ -957,6 +1030,10 @@ fm_config_reread_send_pointer() {
   if [ "$pending_pointer" != "$instruction_path" ]; then
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is mismatched\n' "$id"
     return 1
+  fi
+  if ! fm_config_reread_instruction_deliverable "$instruction_path" "$harness"; then
+    rm -f "$pending_path" "$instruction_path" 2>/dev/null || return 1
+    return 2
   fi
   selector="fm-$id"
   send_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-send.sh"
@@ -1125,7 +1202,7 @@ fm_config_reread_quarantine_pending() {
   return "$rc"
 }
 
-# fm_config_send_reread_nudge <id> <dest-home> <report>
+# fm_config_send_reread_nudge <id> <dest-home> <report> [harness]
 # After successful propagation, if any allowlisted config item changed for this
 # home, write the exact-byte instruction under the destination home and send a
 # single-line pointers to those files through the routed secondmate path
@@ -1136,10 +1213,10 @@ fm_config_reread_quarantine_pending() {
 # failure, print a concrete CONFIG_REREAD retry diagnostic to stdout and return
 # non-zero - never claim the live agent reread the values.
 fm_config_send_reread_nudge() {
-  local id=$1 dest_home=$2 report=$3
+  local id=$1 dest_home=$2 report=$3 harness=${4:-}
   local dest_home_abs state source_home_abs changed_items pending_paths stage_paths delivery_paths
   local stage_path instruction_path current_stage_path exact_tmp
-  local send_failures retry_report_paths retry_report_path retry_stage_path retry_record_path
+  local send_failures retry_report_paths retry_report_path retry_stage_path retry_record_path rc
   [ -n "$id" ] || return 1
   [ -n "$dest_home" ] || return 1
   [ -n "$report" ] && [ -f "$report" ] || return 1
@@ -1148,7 +1225,7 @@ fm_config_send_reread_nudge() {
     return 1
   }
   state="$dest_home_abs/${FM_CONFIG_REREAD_INSTRUCTION_PREFIX_REL%/*}"
-  changed_items=$(fm_config_reread_changed_items "$report")
+  changed_items=$(fm_config_reread_changed_items "$report" "$harness")
   pending_paths=""
   stage_paths=""
   retry_report_paths=""
@@ -1164,6 +1241,10 @@ fm_config_send_reread_nudge() {
   while IFS= read -r retry_report_path; do
     [ -n "$retry_report_path" ] || continue
     retry_stage_path=${retry_report_path%.report}
+    if [ -z "$(fm_config_reread_changed_items "$retry_report_path" "$harness")" ]; then
+      rm -f "$retry_report_path" "$retry_stage_path" 2>/dev/null || send_failures=1
+      continue
+    fi
     exact_tmp=""
     for stage_path in "$retry_stage_path".tmp.*; do
       [ -f "$stage_path" ] && [ ! -L "$stage_path" ] || continue
@@ -1174,7 +1255,7 @@ fm_config_send_reread_nudge() {
       rm -f "$retry_report_path" 2>/dev/null || send_failures=1
       continue
     fi
-    if fm_config_write_reread_instruction "$dest_home_abs" "$retry_report_path" "$retry_stage_path"; then
+    if fm_config_write_reread_instruction "$dest_home_abs" "$retry_report_path" "$retry_stage_path" "$harness"; then
       rm -f "$retry_report_path" 2>/dev/null || send_failures=1
       if [ -n "$stage_paths" ]; then
         stage_paths+=$'\n'
@@ -1220,7 +1301,7 @@ EOF
       printf 'CONFIG_REREAD: secondmate %s: send failed: could not reserve retry instruction\n' "$id"
       return 1
     }
-    if ! fm_config_write_reread_instruction "$dest_home_abs" "$report" "$current_stage_path"; then
+    if ! fm_config_write_reread_instruction "$dest_home_abs" "$report" "$current_stage_path" "$harness"; then
       exact_tmp=${FM_CONFIG_REREAD_FAILED_TEMP:-}
       if [ -n "$exact_tmp" ] \
         && fm_config_reread_adopt_exact_temp "$exact_tmp" "$current_stage_path"; then
@@ -1270,7 +1351,7 @@ EOF
   delivery_paths=$(printf '%s\n' "$delivery_paths" | LC_ALL=C sort)
   while IFS= read -r instruction_path; do
     [ -n "$instruction_path" ] || continue
-    if fm_config_reread_send_pointer "$id" "$instruction_path"; then
+    if fm_config_reread_send_pointer "$id" "$instruction_path" "$harness"; then
       while IFS= read -r stage_path; do
         [ -n "$stage_path" ] || continue
         [ "${stage_path##*/}" = "${instruction_path##*/}" ] || continue
@@ -1279,8 +1360,19 @@ EOF
 $stage_paths
 EOF
     else
-      send_failures=1
-      break
+      rc=$?
+      if [ "$rc" -eq 2 ]; then
+        while IFS= read -r stage_path; do
+          [ -n "$stage_path" ] || continue
+          [ "${stage_path##*/}" = "${instruction_path##*/}" ] || continue
+          rm -f "$stage_path" 2>/dev/null || true
+        done <<EOF
+$stage_paths
+EOF
+      else
+        send_failures=1
+        break
+      fi
     fi
   done <<EOF
 $delivery_paths
