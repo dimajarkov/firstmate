@@ -98,8 +98,8 @@ Because the label is derived from the home's own durable identity - the marker f
 An absent marker selects the primary label, while malformed or empty present marker content refuses workspace resolution instead of routing into the primary workspace.
 The adapter preserves exact recorded pane targets for operational selection, so a display-label collision cannot retarget send, inspect, or cleanup operations.
 
-Every workspace-scoped adapter path reads this SAME resolution: find/ensure (`fm_backend_herdr_workspace_find`/`_ensure`), tab create and its duplicate-label check (`fm_backend_herdr_create_task`), list-live recovery (`fm_backend_herdr_list_live`), and pane-for-tab (`fm_backend_herdr_pane_for_tab`, via the workspace id these resolve).
-So a secondmate's own recovery/duplicate-check calls are automatically scoped to its own space and never see (or collide with) the primary's or a sibling secondmate's tabs.
+The derived label is presentation and naming input, not the workspace selector.
+The exact workspace-scoping and legacy-adoption contracts are owned by "Label collisions" and "No forced migration" below.
 
 ### The one wrinkle: a `--secondmate` spawn is launched BY the primary
 
@@ -146,7 +146,7 @@ The optional projection accepts a top-level space per clean new task as a dispos
 
 ## Default workspace lifecycle: one per-home workspace, reused
 
-Each home's own workspace (`firstmate` for the primary and its derived `2🏴‍☠️-<id>` label for a secondmate - see "Label derivation" above) is created as needed and reused by each subsequent default-container spawn while it exists.
+Each home's own workspace (`firstmate` for the primary, or a current-convention or adopted legacy workspace for a secondmate) is created or adopted as needed and reused by each subsequent default-container spawn while it exists.
 `fm_backend_herdr_workspace_ensure` calls `fm_backend_herdr_workspace_find` first and creates a secondmate workspace only when neither its exact binding nor one unambiguous legacy label resolves.
 Teardown (`fm_backend_herdr_kill`) closes only the task's pane/tab, never the workspace.
 
@@ -320,7 +320,7 @@ For a bare unknown non-`fm-` name, Herdr retains the legacy tmux live-window fal
 Herdr tasks additionally record:
 
 - `herdr_session=` - the named herdr session this task's server lives in.
-- `herdr_workspace_id=` - the id of the exact workspace containing this task's endpoint, ordinarily the primary's `firstmate` workspace or a secondmate's own derived `2🏴‍☠️-<id>` workspace, and a disposable task workspace when the optional projection succeeds; for reference only, since day-to-day operations use the recorded pane target.
+- `herdr_workspace_id=` - the id of the exact workspace containing this task's endpoint, ordinarily the primary's `firstmate` workspace or a secondmate's current-convention or adopted legacy workspace, and a disposable task workspace when the optional projection succeeds; for reference only, since day-to-day operations use the recorded pane target.
 - `herdr_tab_id=` - the task's tab id.
 - `herdr_pane_id=` - the task's pane id, the fast-path operational target.
 

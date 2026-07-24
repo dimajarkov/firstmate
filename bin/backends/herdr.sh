@@ -618,9 +618,9 @@ fm_backend_herdr_projection_journal_replace_endpoint() {  # <journal> <task-id> 
 
 # fm_backend_herdr_projection_concise_task_label: strip redundant owner
 # prefixes from a task id used only in the presentation workspace label.
-# Removes firstmate/, 2ndmate-<id>/, and a presentation-level fm- owner
-# prefix when present. The ordinary task tab remains fm-<id> and is not
-# built by this helper.
+# Removes firstmate/, current or legacy secondmate owner prefixes, and a
+# presentation-level fm- owner prefix when present. The ordinary task tab
+# remains fm-<id> and is not built by this helper.
 fm_backend_herdr_projection_concise_task_label() {  # <task-id>
   local task=$1
   case "$task" in
