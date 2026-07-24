@@ -85,6 +85,7 @@ cleanup_all() {
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 LAB_CLEANUP_ARMED=1
+fm_herdr_lab_provision "$SESSION" || fail "could not provision the explicit test-owned session"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"

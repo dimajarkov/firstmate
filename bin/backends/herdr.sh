@@ -664,22 +664,34 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
   return 0
 }
 
-# fm_backend_herdr_server_ensure: start the herdr server for <session>
-# headless (no TUI client) if not already running, mirroring tmux's `tmux
-# has-session || tmux new-session -d`. Verified: a bare socket CLI call does
-# NOT auto-start the server, so this must run before any workspace/tab/pane
-# call. Bounded poll for the server to report running.
-fm_backend_herdr_server_ensure() {  # <session>
-  local session=$1 running out i
-  running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
-  [ "$running" = "true" ] && return 0
-  ( fm_backend_herdr_cli "$session" server >/dev/null 2>&1 & ) || return 1
-  for i in $(seq 1 20); do
-    running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
-    [ "$running" = "true" ] && return 0
-    sleep 0.5
-  done
-  echo "error: herdr server for session '$session' did not report running within 10s" >&2
+# fm_backend_herdr_server_require: verify that the recorded parent Herdr
+# session already has a running compatible server.
+# Delegated work owns only workspaces and tabs inside that parent session.
+# It must never create or restart a server when the prerequisite is missing.
+fm_backend_herdr_server_require() {  # <session>
+  local session=$1 status state
+  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || {
+    echo "error: required parent herdr session '$session' is unavailable; refusing to start a replacement server" >&2
+    return 1
+  }
+  state=$(printf '%s' "$status" | jq -er '
+    if .server.running != true then "missing"
+    elif .server.compatible == false then "incompatible"
+    else "ready"
+    end
+  ' 2>/dev/null) || {
+    echo "error: required parent herdr session '$session' returned an invalid status; refusing to start a replacement server" >&2
+    return 1
+  }
+  case "$state" in
+    ready) return 0 ;;
+    incompatible)
+      echo "error: required parent herdr session '$session' is incompatible with this client; refusing to start a replacement server" >&2
+      ;;
+    *)
+      echo "error: required parent herdr session '$session' is not running; refusing to start a replacement server" >&2
+      ;;
+  esac
   return 1
 }
 
@@ -829,7 +841,7 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
 }
 
 # fm_backend_herdr_container_ensure: the full spawn-time container-ensure
-# sequence (version gate, server, workspace). Echoes
+# sequence (version gate, existing parent server, workspace). Echoes
 # "<session>:<workspace_id>\t<seeded_default_tab_id>" - a single TAB character
 # always separates the two fields (the second is empty for an ADOPTED
 # workspace) so a caller can split unambiguously with
@@ -840,7 +852,7 @@ fm_backend_herdr_container_ensure() {  # <cwd-for-a-fresh-workspace>
   local cwd=${1:-$PWD} session label
   fm_backend_herdr_version_check || return 1
   session=$(fm_backend_herdr_session)
-  fm_backend_herdr_server_ensure "$session" || return 1
+  fm_backend_herdr_server_require "$session" || return 1
   fm_backend_herdr_workspace_ensure "$session" "$cwd" >/dev/null || { label=$(fm_backend_herdr_workspace_label); echo "error: failed to ensure herdr workspace '$label' in session '$session'" >&2; return 1; }
   if [ -z "$FM_BACKEND_HERDR_WS_ID" ]; then
     label=$(fm_backend_herdr_workspace_label)
@@ -1076,7 +1088,7 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 
   fm_backend_herdr_version_check || return 1
   session=$(fm_backend_herdr_session)
-  fm_backend_herdr_server_ensure "$session" || return 1
+  fm_backend_herdr_server_require "$session" || return 1
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
     echo "error: herdr presentation workspace create could not capture exact active workspace and tab; refusing a focus-unsafe projection" >&2
     return 1
@@ -1197,7 +1209,7 @@ fm_backend_herdr_projection_recovery_allows_flat() {  # <session> <journal> <tas
     echo "error: malformed herdr presentation journal for $id; refusing duplicate launch" >&2
     return 1
   }
-  fm_backend_herdr_server_ensure "$session" || {
+  fm_backend_herdr_server_require "$session" || {
     echo "error: could not inspect the quarantined herdr presentation for $id; refusing duplicate launch" >&2
     return 1
   }
@@ -1277,7 +1289,7 @@ fm_backend_herdr_parse_target() {  # <target>
 
 fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_parse_target "$1" || return 1
-  fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
+  fm_backend_herdr_server_require "$FM_BACKEND_HERDR_SESSION" || return 1
 }
 
 # fm_backend_herdr_shell_quote: quote one value for the pane's POSIX-like
@@ -1799,7 +1811,7 @@ fm_backend_herdr_classify_submit_agent_status() {  # <raw-agent_status>
 
 # fm_backend_herdr_agent_status_raw: one `agent get` read, echoing the raw
 # agent_status string (working/idle/done/blocked/...), or empty on any
-# failure. Deliberately skips fm_backend_herdr_target_ready's server-ensure
+# failure. Deliberately skips fm_backend_herdr_target_ready's parent-readiness
 # round trip (an extra `status --json` call) that fm_backend_herdr_busy_state
 # pays on every call: fm_backend_herdr_wait_for_working polls this in a tight
 # loop right after a caller has already parsed the target and confirmed the

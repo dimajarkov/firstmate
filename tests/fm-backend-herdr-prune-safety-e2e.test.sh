@@ -58,7 +58,7 @@ fm_backend_herdr_version_check || fail "version_check failed against the real in
 LIVE_CWD="$SCRATCH/firstmate"
 mkdir -p "$LIVE_CWD"
 
-fm_backend_herdr_server_ensure "$SESSION" || fail "could not start the isolated session's server"
+fm_herdr_lab_provision "$SESSION" || fail "could not provision the explicit test-owned session"
 
 CREATE_OUT=$(fm_backend_herdr_cli "$SESSION" workspace create --cwd "$LIVE_CWD" --label firstmate --no-focus) \
   || fail "could not create the label-collision startup workspace"

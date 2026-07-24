@@ -287,29 +287,64 @@ test_cli_helper_sets_env_and_appends_trailing_session_flag() {
 
 # --- container_ensure / create_task ------------------------------------------
 
-test_container_ensure_starts_server_and_workspace() {
+test_container_ensure_uses_running_parent_without_starting_server() {
   local dir log resp fb out
   dir="$TMP_ROOT/container"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # 1: version_check status --json (server not running yet, irrelevant to client check)
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  # 2: server_ensure's status --json check -> not running
-  printf '{"server":{"running":false}}\n' > "$resp/2.out"
-  # 3: `herdr server` backgrounded launch - no meaningful output
-  # 4: server_ensure poll -> now running
-  printf '{"server":{"running":true}}\n' > "$resp/4.out"
-  # 5: workspace list -> empty (no "firstmate" workspace yet)
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/5.out"
-  # 6: workspace create -> w1, seeding default tab w1:t9 (real herdr returns
-  # the seeded tab/pane ids in the SAME response - verified empirically).
-  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/6.out"
+  printf '{"server":{"running":true,"compatible":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
+  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t9"},"root_pane":{"pane_id":"w1:p9"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w1\tw1:t9' ] || fail "container_ensure should echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
-  assert_contains "$(cat "$log")" "HERDR_SESSION=fmtest"$'\x1f''server' "container_ensure did not start the herdr server"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' \
+    "container_ensure must not start a Herdr server"
+  assert_not_contains "$(cat "$log")" $'\x1f''session'$'\x1f' \
+    "container_ensure must not invoke Herdr session lifecycle"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate' \
-    "container_ensure did not create the firstmate workspace with the given cwd"
-  pass "fm_backend_herdr_container_ensure: version-gates, starts the server, ensures the firstmate workspace, echoes session:workspace_id + the seeded default tab id"
+    "container_ensure did not create the firstmate workspace in the running parent session"
+  pass "fm_backend_herdr_container_ensure: uses the running parent session and creates only its workspace"
+}
+
+test_container_ensure_refuses_missing_parent_without_provisioning() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/container-parent-missing"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"client":{"version":"0.7.5","protocol":17}}\n' > "$resp/1.out"
+  printf '{"client":{"version":"0.7.5","protocol":17},"server":{"running":false,"compatible":null}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=arena \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "container_ensure must refuse a missing recorded parent session"
+  assert_contains "$out" "required parent herdr session 'arena' is not running" \
+    "missing-parent refusal did not name the recorded session"
+  assert_contains "$out" "refusing to start a replacement server" \
+    "missing-parent refusal did not preserve lifecycle ownership"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' \
+    "missing-parent refusal attempted server provisioning"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f' \
+    "missing-parent refusal reached workspace mutation"
+  pass "fm_backend_herdr_container_ensure: missing parent session refuses without provisioning"
+}
+
+test_container_ensure_refuses_incompatible_parent_without_provisioning() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/container-parent-incompatible"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"client":{"version":"0.7.5","protocol":17}}\n' > "$resp/1.out"
+  printf '{"client":{"version":"0.7.5","protocol":17},"server":{"running":true,"version":"0.7.4","protocol":16,"compatible":false}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=arena \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "container_ensure must refuse an incompatible recorded parent session"
+  assert_contains "$out" "required parent herdr session 'arena' is incompatible" \
+    "incompatible-parent refusal did not name the recorded session"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' \
+    "incompatible-parent refusal attempted server provisioning"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f' \
+    "incompatible-parent refusal reached workspace mutation"
+  pass "fm_backend_herdr_container_ensure: incompatible parent session refuses without provisioning"
 }
 
 test_container_ensure_reuses_existing_workspace() {
@@ -588,21 +623,35 @@ test_container_ensure_creates_with_no_focus_flag() {
   pass "fm_backend_herdr_container_ensure: workspace create passes --no-focus"
 }
 
-test_container_ensure_uses_secondmate_home_label() {
-  local dir log resp fb out home
-  dir="$TMP_ROOT/container-secondmate-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
-  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
-  printf '{"server":{"running":true}}\n' > "$resp/2.out"
-  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
-  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+test_secondmate_child_uses_parent_session_workspace_and_tab_only() {
+  local dir log resp fb out home line
+  dir="$TMP_ROOT/container-secondmate-child"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home"; printf 'arena\n' > "$home/.fm-secondmate-home"
+  printf '{"client":{"version":"0.7.5","protocol":17}}\n' > "$resp/1.out"
+  printf '{"client":{"version":"0.7.5","protocol":17},"server":{"running":true,"version":"0.7.5","protocol":17,"compatible":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w28","label":"2ndmate-arena"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/4.out"
+  printf '{"result":{"tab":{"tab_id":"w28:t3"},"root_pane":{"pane_id":"w28:p3"}}}\n' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
-  [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
-  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2ndmate-sshhip-h7' \
-    "container_ensure did not create the workspace under this secondmate home's own label"
-  pass "fm_backend_herdr_container_ensure: creates the workspace under the SECONDMATE home's own label, not 'firstmate'"
+  out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=arena \
+    bash -c '. "$0/bin/backends/herdr.sh"; container=$(fm_backend_herdr_container_ensure /tmp); task=$(fm_backend_herdr_create_task "${container%%$'"'"'\t'"'"'*}" conversation-simulation-lab-pr1476 /tmp/arena); printf "%s\n%s\n" "$container" "$task"' "$ROOT" )
+  [ "$out" = $'arena:w28\t\nw28:t3 w28:p3' ] || fail "secondmate child did not stay in arena:w28 and create w28:t3/w28:p3, got '$out'"
+  while IFS= read -r line; do
+    assert_contains "$line" "HERDR_SESSION=arena" \
+      "secondmate child emitted a call outside the recorded parent session"
+    case "$line" in
+      *$'\x1f''status'$'\x1f''--json') continue ;;
+    esac
+    assert_contains "$line" $'\x1f''--session'$'\x1f''arena' \
+      "secondmate child call lacked the explicit parent-session target"
+  done < "$log"
+  assert_not_contains "$(cat "$log")" $'\x1f''server' \
+    "Arena-shaped secondmate child started a nested server"
+  assert_not_contains "$(cat "$log")" $'\x1f''session'$'\x1f' \
+    "Arena-shaped secondmate child invoked session lifecycle"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''create'$'\x1f''--workspace'$'\x1f''w28' \
+    "Arena-shaped secondmate child did not create its tab under the parent workspace"
+  pass "fm_backend_herdr: Arena secondmate child creates only w28:t3 under parent session arena"
 }
 
 test_create_task_creates_with_no_focus_flag() {
@@ -2776,10 +2825,12 @@ test_workspace_label_secondmate_marker_trims_whitespace
 test_workspace_label_empty_marker_falls_back_to_primary
 test_workspace_label_different_secondmates_get_different_labels
 test_cli_helper_sets_env_and_appends_trailing_session_flag
-test_container_ensure_starts_server_and_workspace
+test_container_ensure_uses_running_parent_without_starting_server
+test_container_ensure_refuses_missing_parent_without_provisioning
+test_container_ensure_refuses_incompatible_parent_without_provisioning
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
-test_container_ensure_uses_secondmate_home_label
+test_secondmate_child_uses_parent_session_workspace_and_tab_only
 test_workspace_ensure_prunes_default_tab
 test_repeated_cycles_reuse_one_workspace_no_orphans
 test_adopted_workspace_never_prunes_default_tab

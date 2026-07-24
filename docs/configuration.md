@@ -76,8 +76,9 @@ By default, Herdr workspaces are derived from `FM_HOME`: the primary home uses `
 The default-container spawn, list-live, and recovery paths read that label from the active home, so a secondmate's own crewmates stay inside that secondmate home's herdr space.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [`docs/herdr-backend.md`](herdr-backend.md#optional-disposable-single-task-presentation-spaces) owns its behavior, safety limits, and recovery contract.
 The flag is default-off and inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
-For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
-Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.
+For normal Herdr operations, `HERDR_SESSION` selects the already-running recorded parent session, and missing or incompatible parent state stops dispatch without starting a replacement.
+Delegated work never owns Herdr server or session lifecycle.
+Explicit repository-owned backend tests use the guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) and never rely on `HERDR_SESSION` alone or call `herdr server stop`.
 For normal zellij operations, `FM_ZELLIJ_SESSION` selects the named session and defaults to `firstmate`.
 Zellij has no per-home workspace split: primary and secondmate tasks share one session.
 New ordinary worker and scout tabs use the exact task id, collisions refuse safely, and old home-scoped titles remain compatibility-only.

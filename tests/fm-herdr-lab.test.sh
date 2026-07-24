@@ -148,6 +148,21 @@ test_refuses_unsafe_names() {
   pass "fm-herdr-lab: exact semantic names preserve digits, repeat deterministically, and bound long labels without numeric nonces"
 }
 
+test_managed_herdr_worker_cannot_provision_a_nested_session() {
+  local name="lab-arena-carlos-booking-context-loss-fix-20260723" status=0
+  : > "$FAKE_LOG"
+  HERDR_ENV=1 HERDR_PANE_ID=w28:p3 \
+    run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  unset HERDR_ENV HERDR_PANE_ID
+  expect_code 1 "$status" "a Herdr-managed worker must not provision a nested session"
+  [ ! -s "$FAKE_LOG" ] || fail "nested-session guard reached the Herdr CLI"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" \
+    "nested-session guard created an ownership tripwire"
+  assert_absent "$FAKE_STATE/$name" \
+    "nested-session guard created server state"
+  pass "fm-herdr-lab: a Herdr-managed worker cannot provision the Arena-shaped nested session"
+}
+
 test_provision_run_and_guarded_teardown() {
   local name='' line_count status=0 stop_line delete_line
   name="fm-lab-behavior-$$"
@@ -359,6 +374,7 @@ SH
 }
 
 test_refuses_unsafe_names
+test_managed_herdr_worker_cannot_provision_a_nested_session
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
 test_changed_default_trips_after_teardown

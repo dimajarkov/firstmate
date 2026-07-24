@@ -5,7 +5,8 @@ It is the herdr equivalent of the tmux facts recorded in the `harness-adapters` 
 
 Herdr is [an agent-native terminal multiplexer](https://herdr.dev) with a socket API, CLI wrappers, and native per-pane agent-state detection.
 Originally verified against herdr 0.7.1, protocol 14, on macOS aarch64; the latest dated evidence below uses herdr 0.7.4, protocol 16.
-Current real-herdr verification uses isolated named sessions plus the guarded `bin/fm-herdr-lab.sh` lifecycle helper, either directly or through the compatibility wrappers in `tests/herdr-test-safety.sh`.
+Current real-herdr verification uses explicit repository-owned test fixtures with isolated named sessions plus the guarded `bin/fm-herdr-lab.sh` lifecycle helper, either directly or through the compatibility wrappers in `tests/herdr-test-safety.sh`.
+Ordinary delegated work never invokes that helper and always stays inside its already-running recorded parent session.
 A 2026-07-02 cleanup bug proved that `HERDR_SESSION` alone is not a safe way to target destructive session cleanup; see "Session targeting: the `--session` flag, not `HERDR_SESSION` alone" below.
 All real-herdr verification in this document uses isolated sessions and guarded cleanup; the captain's default herdr session and live tmux fleet were never intended targets.
 
@@ -36,7 +37,8 @@ It can also be auto-detected: when firstmate itself is running natively inside h
 A herdr spawn refuses loudly before creating a session container or acquiring a ship/scout worktree if `herdr` or `jq` is missing or the installed herdr's protocol is older than verified.
 For `--secondmate` launches, secondmate home sync and inherited local-material propagation happen before this spawn-time backend gate.
 
-No first-run provisioning is needed beyond having `herdr` and `jq` on `PATH`; firstmate creates the workspace and tab it needs on first spawn.
+The selected parent Herdr session must already be running and compatible before dispatch.
+Firstmate creates only the home workspace and task tab it needs, and refuses instead of starting a missing or replacement server.
 
 Watching and attaching: by default, each firstmate home gets its own herdr workspace (the primary uses `firstmate`; each secondmate uses `2ndmate-<secondmate-id>`), with one tab per task inside it.
 Ordinary worker and scout tabs are named exactly `<id>`; secondmate naming remains unchanged.
@@ -320,7 +322,7 @@ For a bare unknown non-`fm-` name, Herdr retains the legacy tmux live-window fal
 
 Herdr tasks additionally record:
 
-- `herdr_session=` - the named herdr session this task's server lives in.
+- `herdr_session=` - the already-running named parent Herdr session that owns this task's workspace and tab.
 - `herdr_workspace_id=` - the id of the exact workspace containing this task's endpoint, ordinarily the primary's `firstmate` workspace or a secondmate's own `2ndmate-<id>` workspace, and a disposable task workspace when the optional projection succeeds; for reference only, since day-to-day operations use the recorded pane target.
 - `herdr_tab_id=` - the task's tab id.
 - `herdr_pane_id=` - the task's pane id, the fast-path operational target.
@@ -330,7 +332,7 @@ Herdr tasks additionally record:
 | Operation | Verified herdr call | What was verified |
 |---|---|---|
 | Version/protocol gate | `herdr status --json` -> `.client.protocol` | Session-independent; `.server.*` fields ARE session-dependent. |
-| Headless server start | `HERDR_SESSION=<name> herdr server --session <name>` (backgrounded) | A bare socket call does NOT auto-start the server; the adapter always starts-then-polls before any workspace/tab/pane call. This fact is for start only, not cleanup, and the explicit `--session` flag is intentional because `HERDR_SESSION` alone is not safe session targeting. |
+| Parent server prerequisite | `herdr status --json --session <recorded-parent>` | The adapter requires the recorded parent server to be running and not report `compatible:false`; missing, malformed, or incompatible state refuses dispatch and never emits `herdr server`. |
 | Duplicate task check | `herdr tab list --workspace <id>`, match by `.label` | Herdr does NOT enforce tab-label uniqueness itself; two tabs can share a label. The adapter's own duplicate check is required. |
 | Send literal (unsubmitted) | `herdr pane send-text <pane> <text>` | Does NOT auto-submit, contrary to the original design addendum's guess. Verified directly: a unique marker sent this way sits unexecuted in the composer until a separate Enter. Behaves exactly like tmux's `send-keys -l`. |
 | Send + submit atomically | `herdr pane run <pane> <command>` | Runs and submits a command in one call; used for the two fixed spawn-time commands (`treehouse get`, the `GOTMPDIR` export) exactly where tmux used one `send-keys ... Enter` call. |
@@ -345,7 +347,7 @@ Herdr tasks additionally record:
 | Presentation cleanup focus | `herdr pane close <exact-projection-pane>`, followed only when needed by `herdr tab focus <exact-prior-tab>` | Herdr 0.7.4 can move focus to a neighboring workspace when closing a non-focused workspace's last pane. Firstmate serializes projected cleanup, refuses to close the active tab, and restores only the exact response-derived pre-close tab id. No label, order, or projection token is restoration authority. |
 | Recovery / list-live | `herdr tab list --workspace <id>`, then match legacy `fm-*` labels or exact labels bound by this home's `session_name=`, `herdr_tab_id=`, and `herdr_pane_id=` metadata | Exact semantic labels are never adopted by shape alone or after recorded identity is lost. `<id>` is always THIS home's own workspace (`fm_backend_herdr_workspace_find`), so recovery never sees a sibling home's tabs. |
 | Workspace create / tab create (focus) | `herdr workspace create --no-focus`, `herdr tab create --no-focus` | Verified: neither focuses by default once a workspace already exists in the session, matching pre-P3 (flagless) behavior; `--no-focus` is passed anyway for defense in depth, since the very first workspace ever created in a brand-new session focuses regardless of the flag. `--focus` was separately verified to reliably focus, confirming the flag has real effect. |
-| Session targeting for DESTRUCTIVE calls | `herdr session stop <name> --session <name> --json`, then `herdr session delete <name> --session <name> --json`; never `herdr server stop` | Owned by `bin/fm-herdr-lab.sh` (which `tests/herdr-test-safety.sh` sources), re-querying `herdr session list --json` before every destructive call. See "Session targeting" below - `HERDR_SESSION` alone is not reliably honored once another herdr server is already running on the machine. |
+| Session targeting for explicit test-fixture cleanup | `herdr session stop <name> --session <name> --json`, then `herdr session delete <name> --session <name> --json`; never `herdr server stop` | Owned by the repository test fixture `bin/fm-herdr-lab.sh` (which `tests/herdr-test-safety.sh` sources), re-querying `herdr session list --json` before every destructive call. See "Session targeting" below - `HERDR_SESSION` alone is not reliably honored once another herdr server is already running on the machine. |
 
 ## Incident (2026-07-13): the ASCII request separator erased the secondmate marker
 
@@ -565,7 +567,8 @@ All implemented backends expose the identical caller-facing verdict vocabulary (
 
 ## Session targeting: the `--session` flag, not `HERDR_SESSION` alone
 
-`HERDR_SESSION=<name>` is the adapter's normal way to select a named herdr session for NON-destructive operations: start, workspace, tab, pane, capture, send, and busy-state calls all still use it (via `fm_backend_herdr_cli`, below).
+`HERDR_SESSION=<name>` is the adapter's normal way to select a named Herdr parent session for non-destructive workspace, tab, pane, capture, send, and busy-state calls through `fm_backend_herdr_cli`.
+Server start is not an ordinary adapter operation.
 
 Destructive session cleanup is different, and this distinction was learned the hard way.
 Verified empirically: on the installed herdr 0.7.1 client, neither an exported `HERDR_SESSION` nor an inline `HERDR_SESSION="$name"` prefix reliably targets a CLI subcommand once ANOTHER herdr server (e.g. the captain's live default session) is already bound on the machine - the client silently falls back to whatever server IS running instead of the requested one.
@@ -578,8 +581,9 @@ The fix, verified against the real binary in an isolated session (both a genuine
 - `bin/backends/herdr.sh`'s `fm_backend_herdr_cli` helper wraps every herdr invocation in the adapter: it sets `HERDR_SESSION` (kept for cosmetic/forward-compat reasons - harmless, and it is what the client's own JSON echoes back) AND appends a trailing `--session <name>`, so every adapter call is correctly scoped regardless of what else is running on the machine.
 - For destructive session cleanup specifically, use `herdr session stop <name>` / `herdr session delete <name>` (the explicit-by-name forms - `<name>` is a REQUIRED positional argument, so herdr cannot resolve it ambiguously; herdr's own help text requires literally typing `default` to affect the default session), never the ambient `herdr server stop`. `bin/fm-herdr-lab.sh` now owns this guard as the single source of truth: `fm_herdr_lab_teardown` does the stop-then-delete, gated by a read-only hard guard (`fm_herdr_lab_refuse_if_default`, re-querying `herdr session list --json` immediately before EVERY stop/delete call, refusing on a literal `default` name, a not-found name, or `default:true`) as a second, independent layer that fails closed on any ambiguity. `tests/herdr-test-safety.sh` now sources that helper, so its `herdr_safe_stop_and_delete`/`herdr_refuse_if_default` names are thin delegating wrappers over the same owner.
 
-The same guard is now a first-class production helper, `bin/fm-herdr-lab.sh`, not just test scaffolding.
-It provisions an isolated never-`default` lab session.
+The same guard is the explicit repository-owned backend-test fixture `bin/fm-herdr-lab.sh`.
+It provisions an isolated never-`default` test session only when the caller is outside a Herdr-managed pane.
+Provisioning from `HERDR_ENV=1` or a process carrying `HERDR_PANE_ID` refuses before any Herdr call, which prevents a delegated Herdr worker from creating a nested server.
 New generated names are deterministic `lab-<task-id>` values with no process or random suffix; legacy `fm-lab-*` names remain accepted only so in-flight labs can be stopped and deleted safely.
 The complete reported 46-character task id remains intact in the 50-character `lab-` session name.
 Longer labels are bounded to 50 characters by retaining their semantic prefix and final 12 characters, including task-date suffixes, around a letter-only 64-bit digest rather than a numeric nonce.
@@ -590,7 +594,46 @@ Destructive teardown goes only through `teardown <session>` (or a deliberate mid
 It also adds a before/after fleet-state tripwire: `provision` records every pre-existing session except the owned lab before creating it, and `stop` plus `teardown` verify that canonical record before destructive calls and after cleanup.
 The tripwire requires one unambiguous session named `default`, but preserves its observed running or stopped state instead of requiring it to be running.
 It also preserves every unrelated named session's complete inventory object and refuses destructive cleanup if any protected session changes.
-Crewmate briefs for tasks that drive Herdr lifecycle get this exact contract embedded by scaffolding with `bin/fm-brief.sh --herdr-lab`; every crewmate brief scaffolded without the flag instead carries a loud not-enabled gate, because the scaffold cannot detect from the caller-supplied repo string whether the task will touch Herdr lifecycle.
+Every generated crewmate, scout, and secondmate contract requires the already-running recorded parent Herdr session and forbids delegated server or session lifecycle.
+The retired `bin/fm-brief.sh --herdr-lab` flag refuses without writing a brief, and application wording such as Conversation Simulation Lab never changes that ownership boundary.
+
+### Parent-session-only delegated work verification (2026-07-23)
+
+Arena PR 1476 exposed a generated `--herdr-lab` contract that told an ordinary secondmate child to provision `lab-arena-carlos-booking-context-loss-fix-20260723` even though its recorded endpoint was already under session `arena`, workspace `w28`, tab `w28:t3`.
+The nested server disappeared before the Arena application stack started, so the visible 20-conversation matrix block was independent of Arena booking logic.
+The initiating instruction was the generated provisioning command, the exposing condition was ordinary work already running in a Herdr-managed pane, and the visible symptom was a closed channel followed by a missing nested socket.
+
+The current contract removes that path at three independent boundaries.
+`bin/fm-brief.sh` rejects the retired `--herdr-lab` flag and generates the same parent-session-only ownership text for ship, scout, and secondmate contracts.
+`bin/backends/herdr.sh` requires a running compatible recorded parent and never emits `herdr server` when it is absent.
+`bin/fm-herdr-lab.sh` remains available to explicit repository-owned backend-test fixtures but refuses provisioning when `HERDR_ENV=1` or `HERDR_PANE_ID` proves the caller is inside a Herdr-managed pane.
+All verified harnesses consume the same generated brief and backend operations, so no harness-specific lifecycle path remains.
+The tmux, zellij, Orca, and cmux adapters do not call the Herdr requirement and are behaviorally unaffected.
+
+Safe verification used only the already-running parent session and did not create, mutate, stop, or delete any session, workspace, tab, or pane.
+The installed client and parent server were Herdr 0.7.5, protocol 17, on macOS arm64.
+
+```sh
+herdr status --json --session arena | jq -c '{client:{version:.client.version,protocol:.client.protocol,session:.client.session},server:{status:.server.status,running:.server.running,version:.server.version,protocol:.server.protocol,compatible:.server.compatible,session:.server.session,socket:.server.socket}}'
+env -u FM_HOME HERDR_SESSION=arena bash -c '. bin/backends/herdr.sh; fm_backend_herdr_version_check; fm_backend_herdr_server_require arena'
+bash tests/fm-brief.test.sh
+bash tests/fm-backend-herdr.test.sh
+bash tests/fm-herdr-lab.test.sh
+bin/fm-lint.sh
+env -u FM_HOME bin/fm-test-run.sh --all --exclude-family real-herdr-gated --exclude-family live-harness-credential
+```
+
+Exact parent status and requirement result:
+
+```text
+{"client":{"version":"0.7.5","protocol":17,"session":"arena"},"server":{"status":"running","running":true,"version":"0.7.5","protocol":17,"compatible":true,"session":"arena","socket":"/Users/dmitrijarkov/.config/herdr/sessions/arena/herdr.sock"}}
+require_exit=0
+```
+
+The focused brief, adapter, and helper suites passed.
+`bin/fm-lint.sh` reported `ShellCheck 0.11.0 (pinned 0.11.0)` and exited 0.
+The complete portable run reported `FM_TEST_SUMMARY total=84 failed=0 skipped_gate=12`.
+Real isolated-session lifecycle suites were deliberately not run from the active Herdr-managed task pane because the nested-lifecycle guard correctly makes that verification unavailable there.
 
 ### Guarded lab provisioning and stopped-default evidence (2026-07-22)
 

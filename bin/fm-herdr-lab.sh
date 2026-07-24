@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Provision and operate an isolated Herdr lab session without risking any
-# pre-existing Herdr session.
+# Provision and operate an isolated Herdr backend-test session without risking
+# any pre-existing Herdr session.
+# This helper is for explicit repository-owned test fixtures only.
+# It refuses provisioning from inside a Herdr-managed pane so delegated work
+# cannot create a nested server.
 #
 # Usage:
 #   fm-herdr-lab.sh name <label>
@@ -29,6 +32,13 @@ set -u
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
+}
+
+fm_herdr_lab_refuse_managed_runtime() {
+  if [ "${HERDR_ENV:-}" = 1 ] || [ -n "${HERDR_PANE_ID:-}" ]; then
+    fm_herdr_lab_error "refusing nested provisioning from inside a Herdr-managed pane; delegated work must use its recorded parent session"
+    return 1
+  fi
 }
 
 fm_herdr_lab_validate_name() { # <session>
@@ -103,6 +113,7 @@ fm_herdr_lab_fleet_state() { # <session>
 
 fm_herdr_lab_prepare() { # <session>
   local name=$1 sessions state_dir tripwire
+  fm_herdr_lab_refuse_managed_runtime || return 1
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -193,6 +204,7 @@ fm_herdr_lab_cancel_provision() { # <pid>
 
 fm_herdr_lab_provision() { # <session>
   local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  fm_herdr_lab_refuse_managed_runtime || return 1
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }

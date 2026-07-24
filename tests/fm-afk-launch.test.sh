@@ -270,7 +270,7 @@ unit_herdr_partial_create_recovery() {
     FM_AFK_LAUNCH_LABEL=afk-exact-label RECORDED="$recorded" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
-    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_server_require() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
         printf %s '\''truncated'\''
@@ -298,7 +298,7 @@ unit_herdr_error_with_exact_ids_closes_exact() {
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
-    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_server_require() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
         printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
@@ -325,7 +325,7 @@ unit_herdr_run_failure_preserves_unconfirmed_record() {
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     fm_backend_source() { return 0; }
-    fm_backend_herdr_server_ensure() { return 0; }
+    fm_backend_herdr_server_require() { return 0; }
     fm_backend_herdr_cli() {
       if [ "$2 $3" = "workspace create" ]; then
         printf %s '\''{"result":{"workspace":{"workspace_id":"ws-exact"},"root_pane":{"pane_id":"pane-exact"}}}'\''
@@ -767,6 +767,10 @@ unit_flag_write_failure_aborts() {
 # E2E herdr: topology invariant.
 # ---------------------------------------------------------------------------
 e2e_herdr() {
+  if [ "${HERDR_ENV:-}" = 1 ] || [ -n "${HERDR_PANE_ID:-}" ]; then
+    echo "skip: running inside a Herdr-managed pane (nested lifecycle forbidden)"
+    return 0
+  fi
   command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found (herdr e2e)"; return 0; }
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (herdr e2e)"; return 0; }
   # shellcheck source=tests/herdr-test-safety.sh
@@ -787,7 +791,7 @@ e2e_herdr() {
   }
   fm_herdr_lab_prepare "$SESSION" || { fail "herdr e2e: could not prepare isolated lab session"; return 0; }
   fm_backend_source herdr || { E2E_HERDR_CLEANUP; fail "herdr e2e: fm_backend_source herdr failed"; return 0; }
-  fm_backend_herdr_server_ensure "$SESSION" || { E2E_HERDR_CLEANUP; fail "herdr e2e: lab server did not start"; return 0; }
+  fm_herdr_lab_provision "$SESSION" || { E2E_HERDR_CLEANUP; fail "herdr e2e: explicit test-owned server did not start"; return 0; }
 
   out=$(fm_backend_herdr_cli "$SESSION" workspace create --cwd "$ROOT" --label captain --no-focus 2>/dev/null)
   cap_ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
