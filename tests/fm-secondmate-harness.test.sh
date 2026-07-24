@@ -1441,6 +1441,128 @@ test_calm_notification_is_pi_gated_and_retryable() {
   pass "B16 Calm notifications are Pi-only, next-session-specific, and retryable"
 }
 
+write_legacy_mixed_calm_generation() {
+  local path=$1 framing=${2:-$FM_CONFIG_REREAD_FRAMING}
+  printf '%s\n' "$framing" > "$path"
+  printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n' >> "$path"
+  printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}' >> "$path"
+  printf '%s\n' '-----END config/crew-dispatch.json-----' >> "$path"
+  printf '\nconfig/calm\n-----BEGIN config/calm-----\non\n-----END config/calm-----\n' >> "$path"
+  printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n' >> "$path"
+  chmod 0600 "$path"
+}
+
+write_legacy_mixed_without_calm() {
+  local path=$1
+  printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" > "$path"
+  printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n' >> "$path"
+  printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}' >> "$path"
+  printf '%s\n' '-----END config/crew-dispatch.json-----' >> "$path"
+  printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n' >> "$path"
+}
+
+write_legacy_calm_only_generation() {
+  local path=$1
+  printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" > "$path"
+  printf '\nconfig/calm\n-----BEGIN config/calm-----\noff\n-----END config/calm-----\n' >> "$path"
+  chmod 0600 "$path"
+}
+
+test_legacy_calm_generations_migrate_without_losing_order() {
+  local harness w head fakebin report state_real mixed expected calm_only log out status
+  local old new pi_expected old_line new_line
+  for harness in claude codex opencode grok; do
+    w=$(new_world "legacy-calm-$harness")
+    head=$(git -C "$w/main" rev-parse HEAD)
+    add_sm_worktree "$w" sm "$head" "$harness"
+    mkdir -p "$w/sm/state"
+    state_real=$(cd "$w/sm/state" && pwd -P)
+    mixed="$state_real/.fm-inherited-config-reread.0001-mixed"
+    expected="$w/mixed.expected"
+    write_legacy_mixed_calm_generation "$mixed"
+    write_legacy_mixed_without_calm "$expected"
+    fm_config_reread_mark_pending "$mixed" "$mixed.pending" \
+      || fail "$harness legacy mixed generation could not be marked pending"
+    report="$w/empty.report"
+    : > "$report"
+    fakebin=$(make_fake_toolchain "$w")
+    log="$w/mixed.tmux.log"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+      fm_config_send_reread_nudge sm "$w/sm" "$report" "$harness" 2>&1); status=$?
+    expect_code 0 "$status" "$harness legacy mixed generation should deliver"
+    [ -z "$out" ] || fail "$harness legacy mixed generation printed unexpected output: $out"
+    cmp -s "$expected" "$mixed" \
+      || fail "$harness legacy migration did not preserve ordinary blocks byte-exact"
+    [ ! -e "$mixed.pending" ] || fail "$harness legacy mixed generation stayed pending"
+    assert_contains "$(cat "$log")" "CONFIG_REREAD: $mixed" \
+      "$harness legacy mixed generation was not delivered"
+
+    calm_only="$state_real/.fm-inherited-config-reread.0002-calm-only"
+    write_legacy_calm_only_generation "$calm_only"
+    fm_config_reread_mark_pending "$calm_only" "$calm_only.pending" \
+      || fail "$harness Calm-only generation could not be marked pending"
+    : > "$log"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+      fm_config_send_reread_nudge sm "$w/sm" "$report" "$harness" 2>&1); status=$?
+    expect_code 0 "$status" "$harness Calm-only legacy generation should be consumed"
+    [ -z "$out" ] || fail "$harness Calm-only generation printed unexpected output: $out"
+    [ ! -e "$calm_only" ] || fail "$harness Calm-only generation was not consumed"
+    [ ! -e "$calm_only.pending" ] || fail "$harness Calm-only retry marker was not consumed"
+    [ ! -s "$log" ] || fail "$harness received a Calm-only legacy instruction"
+  done
+
+  w=$(new_world legacy-calm-pi-order)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head" pi
+  mkdir -p "$w/sm/state"
+  state_real=$(cd "$w/sm/state" && pwd -P)
+  old="$state_real/.fm-inherited-config-reread.0001-legacy-calm"
+  new="$state_real/.fm-inherited-config-reread.0002-ordinary"
+  pi_expected="$w/pi.expected"
+  write_legacy_mixed_calm_generation "$old"
+  write_legacy_mixed_calm_generation "$pi_expected" "$FM_CONFIG_CALM_FRAMING"
+  printf '%s\n\nconfig/crew-harness\n-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----\n' \
+    "$FM_CONFIG_REREAD_FRAMING" > "$new"
+  chmod 0600 "$new"
+  fm_config_reread_mark_pending "$old" "$old.pending" \
+    || fail "Pi legacy Calm generation could not be marked pending"
+  fm_config_reread_mark_pending "$new" "$new.pending" \
+    || fail "Pi newer ordinary generation could not be marked pending"
+  report="$w/empty.report"
+  : > "$report"
+  fakebin=$(make_fake_toolchain "$w")
+  log="$w/pi-order.tmux.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_FAIL_LITERAL=1 \
+    fm_config_send_reread_nudge sm "$w/sm" "$report" pi 2>&1); status=$?
+  expect_code 1 "$status" "Pi legacy Calm send failure should remain retryable"
+  assert_contains "$out" "CONFIG_REREAD: secondmate sm: send failed" \
+    "Pi legacy Calm send failure diagnostic missing"
+  cmp -s "$pi_expected" "$old" \
+    || fail "Pi legacy Calm generation did not receive approved framing byte-exact"
+  assert_present "$old.pending" "Pi legacy Calm retry marker was lost"
+  assert_present "$new.pending" "Pi newer generation advanced after the older failure"
+  assert_not_contains "$(cat "$log")" "CONFIG_REREAD: $new" \
+    "Pi newer generation delivered before the older retry"
+
+  : > "$log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+    fm_config_send_reread_nudge sm "$w/sm" "$report" pi 2>&1); status=$?
+  expect_code 0 "$status" "Pi legacy Calm retry should deliver"
+  [ -z "$out" ] || fail "Pi legacy Calm retry printed unexpected output: $out"
+  old_line=$(grep -n -F "CONFIG_REREAD: $old" "$log" | head -1 | cut -d: -f1)
+  new_line=$(grep -n -F "CONFIG_REREAD: $new" "$log" | head -1 | cut -d: -f1)
+  [ -n "$old_line" ] && [ -n "$new_line" ] && [ "$old_line" -lt "$new_line" ] \
+    || fail "Pi legacy migration changed retry ordering"
+  [ ! -e "$old.pending" ] || fail "Pi legacy Calm retry marker survived delivery"
+  [ ! -e "$new.pending" ] || fail "Pi newer retry marker survived delivery"
+  pass "B16 legacy Calm generations migrate byte-exact without losing retry order"
+}
+
 test_config_reread_isolation_and_absent_and_send_failure() {
   local w head log out out2 err status status2 instr_a instr_b report retry_log retry_out retry_status retry_pointer
   local first_instr first_copy second_instr second_pointer
@@ -2200,6 +2322,7 @@ test_config_push_exits_nonzero_on_copy_error
 test_config_push_rereads_after_partial_propagation
 test_config_reread_per_home_changed_sets_and_exact_bytes
 test_calm_notification_is_pi_gated_and_retryable
+test_legacy_calm_generations_migrate_without_losing_order
 test_config_reread_isolation_and_absent_and_send_failure
 test_config_reread_publication_failure_retries_exact_generation
 test_config_reread_write_failure_retains_exact_retry_generation

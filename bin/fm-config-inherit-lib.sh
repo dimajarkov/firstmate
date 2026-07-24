@@ -902,11 +902,154 @@ fm_config_reread_has_pending() {
 }
 
 fm_config_reread_instruction_deliverable() {
-  local instruction=$1 harness=${2:-}
+  local instruction=$1 harness=${2:-} item
   [ -f "$instruction" ] && [ ! -L "$instruction" ] || return 1
-  if [ "$harness" != pi ] && grep -Fqx 'config/calm' "$instruction" 2>/dev/null; then
+  [ "$harness" != pi ] || return 0
+  grep -Fqx 'config/calm' "$instruction" 2>/dev/null || return 0
+  for item in $FM_INHERITABLE_CONFIG; do
+    [ "$item" != calm ] || continue
+    grep -Fqx -- "-----BEGIN config/$item-----" "$instruction" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+fm_config_reread_append_line() {
+  local path=$1 line=$2 newline=$3
+  printf '%s' "$line" >> "$path" || return 1
+  [ "$newline" -eq 0 ] || printf '\n' >> "$path"
+}
+
+fm_config_reread_migrate_calm_generation() {
+  local instruction=$1 harness=${2:-} parent raw filtered replacement
+  local line line_rc newline first=1 state=normal held_set=0 held_line held_newline
+  local candidate_blank_newline candidate_path_newline calm_found=0 item ordinary=0
+  [ -f "$instruction" ] && [ ! -L "$instruction" ] || return 1
+  grep -Fqx 'config/calm' "$instruction" 2>/dev/null || return 0
+  parent=${instruction%/*}
+  [ -n "$parent" ] && [ "$parent" != "$instruction" ] || return 1
+  raw=$(umask 077; mktemp "$parent/.fm-config-reread-migrate-raw.XXXXXX" 2>/dev/null) || return 1
+  filtered=$(umask 077; mktemp "$parent/.fm-config-reread-migrate-filtered.XXXXXX" 2>/dev/null) || {
+    rm -f "$raw"
+    return 1
+  }
+  while :; do
+    line=
+    IFS= read -r line
+    line_rc=$?
+    [ "$line_rc" -eq 0 ] || [ -n "$line" ] || break
+    if [ "$line_rc" -eq 0 ]; then
+      newline=1
+    else
+      newline=0
+    fi
+    if [ "$first" -eq 1 ]; then
+      first=0
+      continue
+    fi
+    fm_config_reread_append_line "$raw" "$line" "$newline" || {
+      rm -f "$raw" "$filtered"
+      return 1
+    }
+    case "$state" in
+      normal)
+        if [ "$held_set" -eq 1 ] && [ -z "$held_line" ] && [ "$line" = config/calm ]; then
+          candidate_blank_newline=$held_newline
+          candidate_path_newline=$newline
+          held_set=0
+          state=candidate
+          continue
+        fi
+        if [ "$held_set" -eq 1 ]; then
+          fm_config_reread_append_line "$filtered" "$held_line" "$held_newline" || {
+            rm -f "$raw" "$filtered"
+            return 1
+          }
+        fi
+        held_line=$line
+        held_newline=$newline
+        held_set=1
+        ;;
+      candidate)
+        if [ "$line" = "-----BEGIN config/calm-----" ]; then
+          state=calm
+          continue
+        fi
+        if ! fm_config_reread_append_line "$filtered" "" "$candidate_blank_newline" \
+          || ! fm_config_reread_append_line "$filtered" config/calm "$candidate_path_newline"; then
+          rm -f "$raw" "$filtered"
+          return 1
+        fi
+        held_line=$line
+        held_newline=$newline
+        held_set=1
+        state=normal
+        ;;
+      calm)
+        if [ "$line" = "-----END config/calm-----" ]; then
+          calm_found=1
+          state=normal
+        fi
+        ;;
+    esac
+  done < "$instruction"
+  if [ "$state" = calm ]; then
+    rm -f "$raw" "$filtered"
     return 1
   fi
+  if [ "$state" = candidate ]; then
+    if ! fm_config_reread_append_line "$filtered" "" "$candidate_blank_newline" \
+      || ! fm_config_reread_append_line "$filtered" config/calm "$candidate_path_newline"; then
+      rm -f "$raw" "$filtered"
+      return 1
+    fi
+  elif [ "$held_set" -eq 1 ]; then
+    fm_config_reread_append_line "$filtered" "$held_line" "$held_newline" || {
+      rm -f "$raw" "$filtered"
+      return 1
+    }
+  fi
+  if [ "$calm_found" -eq 0 ]; then
+    rm -f "$raw" "$filtered"
+    return 0
+  fi
+  if [ "$harness" = pi ]; then
+    replacement=$raw
+  else
+    for item in $FM_INHERITABLE_CONFIG; do
+      [ "$item" != calm ] || continue
+      if grep -Fqx -- "-----BEGIN config/$item-----" "$filtered" 2>/dev/null; then
+        ordinary=1
+        break
+      fi
+    done
+    if [ "$ordinary" -eq 0 ]; then
+      rm -f "$raw" "$filtered"
+      return 2
+    fi
+    replacement=$filtered
+  fi
+  line=$(umask 077; mktemp "$parent/.fm-config-reread-migrate.XXXXXX" 2>/dev/null) || {
+    rm -f "$raw" "$filtered"
+    return 1
+  }
+  if [ "$harness" = pi ]; then
+    printf '%s\n' "$FM_CONFIG_CALM_FRAMING" > "$line" || {
+      rm -f "$raw" "$filtered" "$line"
+      return 1
+    }
+  else
+    printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" > "$line" || {
+      rm -f "$raw" "$filtered" "$line"
+      return 1
+    }
+  fi
+  if ! cat "$replacement" >> "$line" \
+    || ! chmod 0600 "$line" 2>/dev/null \
+    || ! mv -f "$line" "$instruction" 2>/dev/null; then
+    rm -f "$raw" "$filtered" "$line"
+    return 1
+  fi
+  rm -f "$raw" "$filtered"
   return 0
 }
 
@@ -1020,7 +1163,7 @@ fm_config_reread_send_failure() {
 # fm_config_reread_send_pointer <id> <instruction-path> [harness]
 fm_config_reread_send_pointer() {
   local id=$1 instruction_path=$2 harness=${3:-}
-  local pending_path selector out rc send_bin message pending_pointer
+  local pending_path selector out rc send_bin message pending_pointer migration_rc
   pending_path="$instruction_path.pending"
   if [ ! -f "$instruction_path" ] || [ -L "$instruction_path" ]; then
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is missing\n' "$id"
@@ -1031,9 +1174,15 @@ fm_config_reread_send_pointer() {
     printf 'CONFIG_REREAD: secondmate %s: send failed: pending instruction file is mismatched\n' "$id"
     return 1
   fi
-  if ! fm_config_reread_instruction_deliverable "$instruction_path" "$harness"; then
+  fm_config_reread_migrate_calm_generation "$instruction_path" "$harness"
+  migration_rc=$?
+  if [ "$migration_rc" -eq 2 ]; then
     rm -f "$pending_path" "$instruction_path" 2>/dev/null || return 1
     return 2
+  fi
+  if [ "$migration_rc" -ne 0 ]; then
+    fm_config_reread_send_failure "$id" "$instruction_path" "$pending_path" "could not migrate pending Calm generation"
+    return 1
   fi
   selector="fm-$id"
   send_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-send.sh"
