@@ -35,6 +35,13 @@ cleanup_all() {
 trap cleanup_all EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare the isolated Herdr lab session"
 
+# Point every source-time state path at the isolated fixture before loading the
+# Herdr adapter, which also loads the shared wake library.
+SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-evwait.XXXXXX")
+STATE="$SCRATCH/state"; mkdir -p "$STATE"
+export FM_STATE_OVERRIDE="$STATE"
+export FM_ROOT_OVERRIDE="$ROOT"
+
 # The dispatcher is a separately linted production boundary. Its dynamic
 # adapter source edges stop at each independently linted canonical adapter.
 # shellcheck source=/dev/null
@@ -65,9 +72,7 @@ EOF
 [ -n "$PANE_ID" ] || fail "create_task did not return a pane id"
 TARGET="$SESSION:$PANE_ID"
 
-# scratch firstmate state so window_to_task and the wake queue resolve
-SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-evwait.XXXXXX")
-STATE="$SCRATCH/state"; mkdir -p "$STATE"
+# Scratch firstmate metadata lets window_to_task resolve the real pane.
 cat > "$STATE/evwait1.meta" <<EOF
 window=$TARGET
 backend=herdr
@@ -113,10 +118,8 @@ UNDER_ONE=$(python3 -c "print('yes' if (($END)-($START)) < 1.0 else 'no')" 2>/de
 pass "real herdr ($HERDR_VERSION): a driven idle->blocked transition returns the blocked record in ${ELAPSED}s (pane $PANE_ID)"
 
 # --- the watcher's fast-path lands a stale record in the scratch wake queue ---
-# Load the narrow production owner only after pointing it at scratch state, then
-# override wake so the handler enqueues without exiting the test.
-export FM_STATE_OVERRIDE="$STATE"
-export FM_ROOT_OVERRIDE="$ROOT"
+# Load the narrow production owner and override wake so the handler enqueues
+# without exiting the test.
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-push-transition-lib.sh"
 wake() { return 0; }

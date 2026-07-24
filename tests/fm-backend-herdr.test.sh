@@ -18,6 +18,14 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
 
+file_mode() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %Lp "$1"
+  else
+    stat -c %a "$1"
+  fi
+}
+
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
 # that call read from $FM_HERDR_RESPONSES/<n>.out, consumed IN ORDER (call 1
@@ -763,7 +771,7 @@ test_container_ensure_uses_secondmate_home_label() {
     || fail "home identity did not bind a random 128-bit token"
   [ "$(sed -n 's/^seeded_tab_id=//p' "$identity")" = w9:t1 ] \
     || fail "home identity did not retain exact seeded-tab recovery authority"
-  [ "$(stat -f '%Lp' "$identity" 2>/dev/null || stat -c '%a' "$identity")" = 400 ] \
+  [ "$(file_mode "$identity")" = 400 ] \
     || fail "bound home identity record is not read-only"
   [ ! -e "$dir/session-incarnation/.firstmate-session-incarnation-v1" ] \
     || fail "container_ensure wrote an ownership marker into Herdr's session directory"
@@ -1889,11 +1897,11 @@ test_workspace_identity_incarnation_change_refuses_live_old_endpoint() {
   assert_not_contains "$(cat "$log")" $'\x1fworkspace\x1fcreate' "live old endpoint did not block workspace creation"
   after=$(cksum "$old")
   [ "$before" = "$after" ] || fail "old identity record changed during incarnation refusal"
-  [ "$(stat -f '%Lp' "$old" 2>/dev/null || stat -c '%a' "$old")" = 400 ] || fail "old identity record lost read-only mode"
+  [ "$(file_mode "$old")" = 400 ] || fail "old identity record lost read-only mode"
   records=$(find "$home/state" -name '.herdr-workspace-identity-v1-*' -type f | wc -l | tr -d '[:space:]')
   [ "$records" = 2 ] || fail "incarnation refusal did not retain old plus prepared current records"
   current=$(grep -l '^phase=prepared$' "$home/state"/.herdr-workspace-identity-v1-*)
-  [ "$(stat -f '%Lp' "$current" 2>/dev/null || stat -c '%a' "$current")" = 400 ] \
+  [ "$(file_mode "$current")" = 400 ] \
     || fail "prepared current identity record is not read-only"
   pass "Herdr home identity: incarnation changes retain history and refuse beside live old endpoints"
 }
