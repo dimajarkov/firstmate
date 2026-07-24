@@ -535,8 +535,8 @@ fm_backend_herdr_workspace_legacy_exact_id() {  # <session> <workspace-list-json
     # label, then immediately bind its immutable id. Current display labels,
     # renamed workspaces, projections, and task metadata never authorize this.
     legacy=$(fm_backend_herdr_workspace_legacy_label) || return 2
-    matches=$(printf '%s' "$workspaces" | jq -r --arg label "$legacy" '
-      [.result.workspaces[]? | select(.label == $label) | .workspace_id] | if length == 1 then .[0] else empty end
+    matches=$(printf '%s' "$workspaces" | jq -r --arg want "$legacy" '
+      [.result.workspaces[]? | select(.label == $want) | .workspace_id] | if length == 1 then .[0] else empty end
     ' 2>/dev/null) || return 2
     [ -n "$matches" ] || return 1
   elif [ "$count" -ne 1 ]; then
