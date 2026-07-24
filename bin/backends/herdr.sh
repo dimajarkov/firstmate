@@ -101,6 +101,7 @@ FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
 # The primary firstmate home never carries this marker.
 FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 FM_BACKEND_HERDR_WORKSPACE_BINDING=".herdr-workspace"
+FM_BACKEND_HERDR_WORKSPACE_RECOVERY=".herdr-workspace-recovery"
 # The default-off presentation projection is intentionally separate from the
 # authoritative task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
@@ -194,7 +195,7 @@ fm_backend_herdr_workspace_state_dir() {
 }
 
 fm_backend_herdr_workspace_binding_preflight() {
-  local status state binding tmp
+  local status state record tmp
   if fm_backend_herdr_secondmate_id >/dev/null; then
     :
   else
@@ -207,32 +208,40 @@ fm_backend_herdr_workspace_binding_preflight() {
     mkdir -p "$state" || return 1
   fi
   [ -d "$state" ] || return 1
-  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
-  if [ -e "$binding" ] || [ -L "$binding" ]; then
-    [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
-  fi
+  for record in \
+    "$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING" \
+    "$state/$FM_BACKEND_HERDR_WORKSPACE_RECOVERY"; do
+    if [ -e "$record" ] || [ -L "$record" ]; then
+      [ -f "$record" ] && [ ! -L "$record" ] || return 1
+    fi
+  done
   tmp=$(mktemp "$state/.herdr-workspace.preflight.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
 }
 
 fm_backend_herdr_workspace_bound_id() {  # <session>
-  local session=$1 state binding version home_id bound_session workspace expected_id
+  local session=$1 state record version home_id bound_session workspace expected_id
   expected_id=$(fm_backend_herdr_secondmate_id) || return 1
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
-  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
-  [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
-  version=$(fm_backend_herdr_workspace_binding_field "$binding" version) || return 1
-  home_id=$(fm_backend_herdr_workspace_binding_field "$binding" home_id) || return 1
-  bound_session=$(fm_backend_herdr_workspace_binding_field "$binding" session) || return 1
-  workspace=$(fm_backend_herdr_workspace_binding_field "$binding" workspace_id) || return 1
-  [ "$version" = 1 ] && [ "$home_id" = "$expected_id" ] && [ "$bound_session" = "$session" ] || return 1
-  case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
-  printf '%s' "$workspace"
+  for record in \
+    "$state/$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" \
+    "$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"; do
+    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    version=$(fm_backend_herdr_workspace_binding_field "$record" version) || continue
+    home_id=$(fm_backend_herdr_workspace_binding_field "$record" home_id) || continue
+    bound_session=$(fm_backend_herdr_workspace_binding_field "$record" session) || continue
+    workspace=$(fm_backend_herdr_workspace_binding_field "$record" workspace_id) || continue
+    [ "$version" = 1 ] && [ "$home_id" = "$expected_id" ] && [ "$bound_session" = "$session" ] || continue
+    case "$workspace" in ''|*[[:space:]]*) continue ;; esac
+    printf '%s' "$workspace"
+    return 0
+  done
+  return 1
 }
 
-fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
-  local session=$1 workspace=$2 id status state binding tmp
+fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <workspace-id>
+  local record_name=$1 session=$2 workspace=$3 id status state record tmp
   if id=$(fm_backend_herdr_secondmate_id); then
     :
   else
@@ -243,15 +252,19 @@ fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
   case "$session" in ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
-  binding="$state/$FM_BACKEND_HERDR_WORKSPACE_BINDING"
+  case "$record_name" in
+    "$FM_BACKEND_HERDR_WORKSPACE_BINDING"|"$FM_BACKEND_HERDR_WORKSPACE_RECOVERY") ;;
+    *) return 1 ;;
+  esac
+  record="$state/$record_name"
   if [ ! -e "$state" ]; then
     mkdir -p "$state" || return 1
   fi
   [ -d "$state" ] || return 1
-  if [ -e "$binding" ] || [ -L "$binding" ]; then
-    [ -f "$binding" ] && [ ! -L "$binding" ] || return 1
+  if [ -e "$record" ] || [ -L "$record" ]; then
+    [ -f "$record" ] && [ ! -L "$record" ] || return 1
   fi
-  tmp=$(mktemp "$state/.herdr-workspace.bind.XXXXXX") || return 1
+  tmp=$(mktemp "$state/.herdr-workspace.record.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   if ! {
     printf 'version=1\n'
@@ -262,7 +275,36 @@ fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$binding" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$record" || { rm -f "$tmp"; return 1; }
+}
+
+fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id>
+  local session=$1 workspace=$2 status
+  if fm_backend_herdr_secondmate_id >/dev/null; then
+    :
+  else
+    status=$?
+    [ "$status" -eq 1 ] && return 0
+    return "$status"
+  fi
+  fm_backend_herdr_workspace_record_publish \
+    "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session" "$workspace" || return 1
+  fm_backend_herdr_workspace_recovery_clear
+}
+
+fm_backend_herdr_workspace_recovery_clear() {
+  local state recovery
+  state=$(fm_backend_herdr_workspace_state_dir) || return 1
+  recovery="$state/$FM_BACKEND_HERDR_WORKSPACE_RECOVERY"
+  if [ -e "$recovery" ] || [ -L "$recovery" ]; then
+    [ -f "$recovery" ] && [ ! -L "$recovery" ] || return 1
+    rm -f "$recovery" || return 1
+  fi
+}
+
+fm_backend_herdr_workspace_recovery_publish() {  # <session> <workspace-id>
+  fm_backend_herdr_workspace_record_publish \
+    "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$1" "$2"
 }
 
 # fm_backend_herdr_cli: run `herdr <args...>` scoped to <session>, setting
@@ -1104,7 +1146,7 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
 # attach to). --no-focus is passed unconditionally anyway, for defense in
 # depth and because it is a no-op in the already-safe case.
 fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
-  local session=$1 cwd=$2 wsid out label root_pane seeded_tab
+  local session=$1 cwd=$2 wsid out label root_pane seeded_tab rollback_list recovery_retained
   FM_BACKEND_HERDR_WS_ID=""
   FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=""
   label=$(fm_backend_herdr_workspace_label) || return 1
@@ -1122,10 +1164,22 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
   root_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   seeded_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   if ! fm_backend_herdr_workspace_binding_publish "$session" "$wsid"; then
+    recovery_retained=0
+    if fm_backend_herdr_workspace_recovery_publish "$session" "$wsid"; then
+      recovery_retained=1
+    else
+      echo "error: failed to retain exact recovery binding for herdr workspace '$wsid' in session '$session'" >&2
+    fi
     if [ -n "$root_pane" ]; then
-      fm_backend_herdr_cli "$session" pane close "$root_pane" >/dev/null 2>&1 || true
+      fm_backend_herdr_cli "$session" pane close "$root_pane" >/dev/null 2>&1 || :
     elif [ -n "$seeded_tab" ]; then
-      fm_backend_herdr_cli "$session" tab close "$seeded_tab" >/dev/null 2>&1 || true
+      fm_backend_herdr_cli "$session" tab close "$seeded_tab" >/dev/null 2>&1 || :
+    fi
+    rollback_list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null || true)
+    if printf '%s' "$rollback_list" | jq -e --arg workspace "$wsid" '
+      [.result.workspaces[]? | select(.workspace_id == $workspace)] | length == 0
+    ' >/dev/null 2>&1 && [ "$recovery_retained" -eq 1 ]; then
+      fm_backend_herdr_workspace_recovery_clear || :
     fi
     return 1
   fi

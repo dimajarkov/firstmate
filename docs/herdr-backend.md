@@ -51,6 +51,7 @@ The primary home retains its established label lookup, while each secondmate hom
 Suffix-colliding ids such as `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while spawn, recovery, list-live, and presentation ordering remain scoped to their separate exact workspace ids.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
 Without a valid exact binding, Firstmate reuses exactly one live legacy `2ndmate-<id>` workspace without renaming it and publishes the binding for subsequent operations.
+If exact cleanup after a late binding-publication failure cannot remove the response-created workspace, `state/.herdr-workspace-recovery` retains its exact id so the next lookup adopts it instead of creating another.
 Ambiguous duplicate legacy labels are left untouched rather than guessed at.
 Avoid naming a personal workspace `firstmate` because the primary adapter retains label-based lookup.
 An even older secondmate workspace using `firstmate-<id>` is not migrated automatically; rename it manually before expecting new tasks or recovery to use it.

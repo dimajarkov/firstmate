@@ -1669,6 +1669,7 @@ test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure() {
   home="$TMP_ROOT/binding-rollback-home"; mkdir -p "$home/state"; printf 'rollback-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
   printf '{"result":{"workspace":{"workspace_id":"w9","label":"2🏴‍☠️-rollback"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
@@ -1678,7 +1679,38 @@ test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure() {
     "late binding publication failure did not close the exact response-created root pane"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close' \
     "late binding publication failure used broad workspace-close authority"
+  [ ! -e "$home/state/.herdr-workspace-recovery" ] \
+    || fail "verified exact rollback left an unnecessary recovery binding"
   pass "fm_backend_herdr_workspace_ensure: late binding failure rolls back only the exact created pane"
+}
+
+test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
+  local dir log resp fb out status home
+  dir="$TMP_ROOT/binding-rollback-fails"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-rollback-fails-home"; mkdir -p "$home/state"; printf 'rollback-fails-secondmate\n' > "$home/.fm-secondmate-home"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/2.out"
+  printf '1\n' > "$resp/3.exit"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "failed exact rollback should still fail workspace ensure"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace-recovery")" = w9 ] \
+    || fail "failed exact rollback did not retain the response-created workspace id"
+  rm -f "$resp/.count"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/1.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
+  [ "$out" = w9 ] || fail "retry did not recover the unremoved exact workspace, got '$out'"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+    || fail "retry did not promote the recovery record to the authoritative binding"
+  [ ! -e "$home/state/.herdr-workspace-recovery" ] \
+    || fail "retry left the recovery record after publishing the authoritative binding"
+  [ "$(grep -c $'\x1f''workspace'$'\x1f''create' "$log")" -eq 1 ] \
+    || fail "retry created another workspace instead of adopting the retained exact id"
+  pass "fm_backend_herdr_workspace_ensure: failed exact rollback retains a retry-safe workspace binding"
 }
 
 test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
@@ -3174,6 +3206,7 @@ test_workspace_find_adopts_one_legacy_label_only
 test_workspace_ensure_binds_legacy_workspace_without_renaming
 test_workspace_binding_accepts_only_in_home_state_symlinks
 test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure
+test_workspace_ensure_retains_recovery_when_exact_rollback_fails
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
