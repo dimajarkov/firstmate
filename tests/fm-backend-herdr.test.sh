@@ -108,13 +108,15 @@ save() {
 }
 
 cmd=${1:-}; sub=${2:-}
-ws=""; label=""; cwd=""
+ws=""; label=""; cwd=""; pane=""; env_value=""
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --workspace) ws=${args[$((i+1))]:-} ;;
     --cwd) cwd=${args[$((i+1))]:-} ;;
     --label) label=${args[$((i+1))]:-} ;;
+    --pane) pane=${args[$((i+1))]:-} ;;
+    --env) env_value=${args[$((i+1))]:-} ;;
   esac
 done
 
@@ -131,11 +133,12 @@ case "$cmd $sub" in
     jq_state '{result:{workspaces:.workspaces}}'
     ;;
   "workspace create")
+    [ -z "${FM_FAKE_WORKSPACE_CREATE_DELAY:-}" ] || sleep "$FM_FAKE_WORKSPACE_CREATE_DELAY"
     n=$(jq_state -r '.next'); wsid="w$n"; dn=$((n + 1))
-    jq_state --arg wsid "$wsid" --arg wlabel "$label" --arg cwd "$cwd" \
+    jq_state --arg wsid "$wsid" --arg wlabel "$label" --arg cwd "$cwd" --arg env "$env_value" \
       --arg tabid "$wsid:t$dn" --arg paneid "$wsid:p$dn" \
       '.workspaces += [{workspace_id:$wsid, label:$wlabel}]
-       | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid}]
+       | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid, environment:$env}]
        | .next = (.next + 2)' | save
     printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' \
       "$wsid" "$label" "$wsid:t$dn" "$wsid:p$dn"
@@ -145,8 +148,8 @@ case "$cmd $sub" in
     ;;
   "tab create")
     n=$(jq_state -r '.next'); tabid="$ws:t$n"; paneid="$ws:p$n"
-    jq_state --arg w "$ws" --arg wlabel "$label" --arg tabid "$tabid" --arg paneid "$paneid" \
-      '.tabs += [{tab_id:$tabid, label:$wlabel, workspace_id:$w, pane_id:$paneid}]
+    jq_state --arg w "$ws" --arg wlabel "$label" --arg tabid "$tabid" --arg paneid "$paneid" --arg env "$env_value" \
+      '.tabs += [{tab_id:$tabid, label:$wlabel, workspace_id:$w, pane_id:$paneid, environment:$env}]
        | .next = (.next + 1)' | save
     printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tabid" "$paneid"
     ;;
@@ -165,6 +168,15 @@ case "$cmd $sub" in
         '{result:{pane:(.tabs[]|select(.pane_id==$p)|{pane_id:.pane_id,tab_id:.tab_id})}}'
     else
       printf '{"error":{"code":"pane_not_found","message":"pane target %s not found"}}\n' "$pane"
+    fi
+    ;;
+  "pane process-info")
+    environment=$(jq_state -r --arg p "$pane" '.tabs[] | select(.pane_id == $p) | .environment // empty')
+    if [ -n "$environment" ]; then
+      printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":1,"environment":["%s"]}}}\n' \
+        "$pane" "$environment"
+    else
+      printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":1,"environment":[]}}}\n' "$pane"
     fi
     ;;
   "pane close")
@@ -230,6 +242,19 @@ herdr_write_workspace_record() {  # <path> <home-id> <session> <workspace> <test
     printf 'workspace_id=%s\n' "$workspace"
     printf 'workspace_token=%s\n' "$workspace_token"
     [ -z "$seeded_tab" ] || printf 'seeded_tab_id=%s\n' "$seeded_tab"
+  } > "$path"
+}
+
+herdr_write_workspace_record_v5() {  # <path> <home-id> <session> <workspace> <test-dir>
+  local path=$1 home_id=$2 session=$3 workspace=$4 dir=$5 incarnation
+  incarnation=$(herdr_test_session_incarnation "$dir") || return 1
+  {
+    printf 'version=5\n'
+    printf 'home_id=%s\n' "$home_id"
+    printf 'session=%s\n' "$session"
+    printf 'session_incarnation=%s\n' "$incarnation"
+    printf 'workspace_id=%s\n' "$workspace"
+    printf 'workspace_token=abcdefghijklmnopqrstuv\n'
   } > "$path"
 }
 
@@ -708,8 +733,10 @@ test_container_ensure_uses_secondmate_home_label() {
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp' \
     "container_ensure did not preserve the requested workspace cwd"
-  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''rename'$'\x1f''w9:t1'$'\x1f''1 · w:' \
-    "container_ensure did not mark the exact seeded tab with live workspace authority"
+  assert_contains "$(cat "$log")" $'\x1f''--env'$'\x1f''FIRSTMATE_HERDR_WORKSPACE_TOKEN=' \
+    "container_ensure did not place non-display workspace authority in the seeded pane environment"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''rename' \
+    "container_ensure changed the seeded tab's visible label"
   assert_contains "$(cat "$log")" $'\x1f''--label'$'\x1f''2🏴‍☠️-sshhip-h7' \
     "container_ensure did not create the workspace under this secondmate home's own label"
   binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
@@ -718,7 +745,7 @@ test_container_ensure_uses_secondmate_home_label() {
     || fail "container_ensure did not publish the exact secondmate workspace binding"
   workspace_token=$(sed -n 's/^workspace_token=//p' "$binding")
   [ "${#workspace_token}" -eq 22 ] \
-    || fail "container_ensure did not bind the workspace's live tab token"
+    || fail "container_ensure did not bind the workspace's hidden pane token"
   [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
     || fail "container_ensure did not retain the seeded-tab recovery authority through task creation"
   [ ! -e "$dir/session-incarnation/session.json" ] \
@@ -1785,6 +1812,142 @@ test_workspace_find_accepts_manually_renamed_bound_workspace() {
   pass "fm_backend_herdr_workspace_find: exact per-session bindings survive manual label renames"
 }
 
+test_workspace_find_treats_absent_bound_id_as_stale() {
+  local dir log resp fb out home binding
+  dir="$TMP_ROOT/find-absent-bound"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/find-absent-bound-home"; mkdir -p "$home/state"; printf 'absent-secondmate\n' > "$home/.fm-secondmate-home"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  herdr_write_workspace_record "$binding" absent-secondmate fmtest w7 "$dir"
+  printf '{"result":{"workspaces":[{"workspace_id":"w8","label":"captain workspace"}]}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ -z "$out" ] || fail "an absent bound workspace id should be stale, got '$out'"
+  assert_not_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''list'$'\x1f''--workspace'$'\x1f''w7' \
+    "workspace_find queried tabs for an absent bound workspace"
+  pass "fm_backend_herdr_workspace_find: absent bound ids are stale without tab queries"
+}
+
+test_workspace_find_recovers_restart_from_exact_task_metadata() {
+  local dir log resp fb out home binding
+  dir="$TMP_ROOT/find-restart-meta"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/find-restart-meta-home"; mkdir -p "$home/state"; printf 'restart-secondmate\n' > "$home/.fm-secondmate-home"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  herdr_write_workspace_record_v5 "$binding" restart-secondmate fmtest w7 "$dir"
+  {
+    printf 'backend=herdr\n'
+    printf 'herdr_session=fmtest\n'
+    printf 'herdr_workspace_id=w7\n'
+    printf 'herdr_tab_id=w7:t2\n'
+    printf 'herdr_pane_id=w7:p2\n'
+    printf 'worktree=/proj\n'
+  } > "$home/state/task.meta"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"captain renamed this space"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w7:p2","tab_id":"w7:t2"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"process_info":{"pane_id":"w7:p2","shell_pid":1,"environment":[]}}}\n' > "$resp/3.out"
+  printf '{"result":{"tabs":[{"tab_id":"w7:t2","label":"fm-task"}]}}\n' > "$resp/4.out"
+  printf '{"result":{"panes":[{"pane_id":"w7:p2","tab_id":"w7:t2","workspace_id":"w7"}]}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p2","tab_id":"w7:t2","workspace_id":"w7","cwd":"/proj"}}}\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ "$out" = w7 ] || fail "restart recovery did not accept exact task metadata, got '$out'"
+  pass "Herdr workspace binding: exact task metadata recovers non-display ownership after restart"
+}
+
+test_secondmate_task_labels_remain_exact_with_hidden_ownership() {
+  local dir log state fb home raw container seeded ids wsid label
+  dir="$TMP_ROOT/hidden-workspace-token"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
+  home="$TMP_ROOT/hidden-workspace-token-home"; mkdir -p "$home/state"; printf 'hidden-secondmate\n' > "$home/.fm-secondmate-home"
+  fb=$(make_herdr_statefake "$dir")
+  raw=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT") \
+    || fail "secondmate container creation with hidden ownership failed"
+  container=${raw%%$'\t'*}
+  seeded=${raw#*$'\t'}
+  wsid=${container#*:}
+  ids=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task "$1" fm-exact /proj "$2"' "$ROOT" "$container" "$seeded") \
+    || fail "secondmate task creation with hidden ownership failed"
+  [ -n "$ids" ] || fail "secondmate task creation returned no endpoint"
+  label=$(jq -r --arg workspace "$wsid" '.tabs[] | select(.workspace_id == $workspace) | .label' "$state")
+  [ "$label" = fm-exact ] || fail "secondmate task label was not exact: '$label'"
+  assert_contains "$(cat "$log")" $'\x1f''--env'$'\x1f''FIRSTMATE_HERDR_WORKSPACE_TOKEN=' \
+    "secondmate creation did not carry hidden ownership in pane environments"
+  assert_not_contains "$(cat "$log")" ' · w:' \
+    "secondmate creation exposed workspace ownership in a visible tab label"
+  pass "Herdr secondmate ownership: task labels stay exact and tokens stay hidden"
+}
+
+test_workspace_ensure_serializes_cross_task_creation() {
+  local dir log state fb home first second first_pid second_pid creates workspaces
+  dir="$TMP_ROOT/workspace-ensure-serialized"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
+  home="$TMP_ROOT/workspace-ensure-serialized-home"; mkdir -p "$home/state"; printf 'serialized-secondmate\n' > "$home/.fm-secondmate-home"
+  first="$dir/first.out"; second="$dir/second.out"
+  fb=$(make_herdr_statefake "$dir")
+  PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    FM_FAKE_WORKSPACE_CREATE_DELAY=0.2 HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /proj' "$ROOT" > "$first" &
+  first_pid=$!
+  PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    FM_FAKE_WORKSPACE_CREATE_DELAY=0.2 HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /proj' "$ROOT" > "$second" &
+  second_pid=$!
+  wait "$first_pid" || fail "first concurrent workspace ensure failed"
+  wait "$second_pid" || fail "second concurrent workspace ensure failed"
+  [ "$(cat "$first")" = "$(cat "$second")" ] \
+    || fail "concurrent workspace ensures resolved different workspaces"
+  creates=$(grep -c $'\x1fworkspace\x1fcreate' "$log" || true)
+  workspaces=$(jq -r '.workspaces | length' "$state")
+  [ "$creates" = 1 ] && [ "$workspaces" = 1 ] \
+    || fail "concurrent workspace ensures created $creates calls and $workspaces workspaces"
+  pass "Herdr workspace ensure: cross-task creation is serialized per home and session"
+}
+
+test_create_task_normalizes_legacy_token_suffix_for_duplicates() {
+  local dir log resp fb home binding out
+  dir="$TMP_ROOT/logical-duplicate"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/logical-duplicate-home"; mkdir -p "$home/state"; printf 'duplicate-secondmate\n' > "$home/.fm-secondmate-home"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  herdr_write_workspace_record "$binding" duplicate-secondmate fmtest w7 "$dir"
+  printf '{"result":{"tabs":[{"tab_id":"w7:t1","label":"fm-dupe · w:abcdefghijklmnopqrstuv"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w7:p1","tab_id":"w7:t1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w7:p1"}}}\n' > "$resp/3.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/4.out"
+  printf '{"result":{"tab":{"tab_id":"w7:t2"},"root_pane":{"pane_id":"w7:p2"}}}\n' > "$resp/5.out"
+  printf '{"result":{"tabs":[{"tab_id":"w7:t2","label":"fm-dupe"}]}}\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w7 fm-dupe /proj' "$ROOT") \
+    || fail "logical duplicate replacement failed"
+  [ "$out" = "w7:t2 w7:p2" ] || fail "logical duplicate replacement returned '$out'"
+  assert_contains "$(cat "$log")" $'\x1f''tab'$'\x1f''close'$'\x1f''w7:t1' \
+    "legacy token-suffixed logical duplicate was not replaced"
+  assert_contains "$(cat "$log")" $'\x1f''--label'$'\x1f''fm-dupe'$'\x1f''--env' \
+    "replacement task did not preserve the exact logical label"
+  assert_not_contains "$(cat "$log")" $'\x1f''--label'$'\x1f''fm-dupe · w:' \
+    "replacement task retained a visible ownership suffix"
+  pass "Herdr task creation: duplicate matching normalizes legacy ownership suffixes"
+}
+
+test_projection_seed_prune_is_explicitly_tokenless_for_secondmates() {
+  local dir log resp fb home out
+  dir="$TMP_ROOT/projection-tokenless-prune"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/projection-tokenless-home"; mkdir -p "$home/state"; printf 'projection-secondmate\n' > "$home/.fm-secondmate-home"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"},{"tab_id":"w9:t2","label":"fm-task"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/3.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/4.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task"}]}}\n' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_prune_seeded_default_tab fmtest w9 w9:t1 direct 1' "$ROOT" 2>&1) \
+    || fail "explicit tokenless projected seed prune failed: $out"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''process-info' \
+    "tokenless projected pruning tried to validate parent workspace ownership"
+  pass "Herdr projected pruning: explicit tokenless mode works under secondmate homes"
+}
+
 test_workspace_find_rejects_stale_session_incarnation() {
   local dir log resp fb out status home binding recovery
   dir="$TMP_ROOT/find-stale-incarnation"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -1961,9 +2124,9 @@ test_workspace_records_are_isolated_per_session() {
     . "$0/bin/backends/herdr.sh"
     fm_backend_herdr_session_incarnation() { printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
     fm_backend_herdr_workspace_binding_publish session-a w1 abcdefghijklmnopqrstuv
-    fm_backend_herdr_workspace_recovery_publish session-a w1 abcdefghijklmnopqrstuv w1:t1
+    fm_backend_herdr_workspace_recovery_publish session-a w1 abcdefghijklmnopqrstuv w1:t1 w1:p1
     fm_backend_herdr_workspace_binding_publish session-b w2 zyxwvutsrqponmlkjihgfe
-    fm_backend_herdr_workspace_recovery_publish session-b w2 zyxwvutsrqponmlkjihgfe w2:t1
+    fm_backend_herdr_workspace_recovery_publish session-b w2 zyxwvutsrqponmlkjihgfe w2:t1 w2:p1
     fm_backend_herdr_workspace_recovery_clear session-b w2
     printf "%s\t%s" \
       "$(fm_backend_herdr_workspace_record_static_id "$1" session-a)" \
@@ -1996,8 +2159,7 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
   dir="$TMP_ROOT/ensure-legacy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/ensure-legacy-home"; mkdir -p "$home/state"; printf 'legacy-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"2ndmate-legacy-secondmate"}]}}\n' > "$resp/1.out"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1"}]}}\n' > "$resp/2.out"
-  printf '{"result":{"tabs":[{"tab_id":"w1:t1","label":"1 · w:abcdefghijklmnopqrstuv"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_token_generate() { printf abcdefghijklmnopqrstuv; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
@@ -2007,7 +2169,9 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
     || fail "workspace_ensure did not bind the adopted legacy workspace exactly"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''rename' "legacy adoption renamed the workspace"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "legacy adoption created a replacement workspace"
-  pass "fm_backend_herdr_workspace_ensure: legacy workspace adoption publishes an exact binding without migration"
+  assert_contains "$(cat "$log")" $'\x1f''--label'$'\x1f''1'$'\x1f''--env'$'\x1f''FIRSTMATE_HERDR_WORKSPACE_TOKEN=' \
+    "legacy adoption did not initialize non-display workspace authority"
+  pass "fm_backend_herdr_workspace_ensure: legacy adoption preserves labels and initializes hidden authority"
 }
 
 test_workspace_binding_accepts_only_in_home_state_symlinks() {
@@ -2082,12 +2246,16 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
     || fail "failed exact rollback did not retain the response-created seeded tab id"
   rm -f "$resp/.count"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/1.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1 · w:abcdefghijklmnopqrstuv"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"process_info":{"pane_id":"w9:p1","shell_pid":1,"environment":["FIRSTMATE_HERDR_WORKSPACE_TOKEN=abcdefghijklmnopqrstuv"]}}}\n' > "$resp/3.out"
   rm -f "$resp/3.exit"
-  cp "$resp/2.out" "$resp/3.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/4.out"
-  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/5.out"
-  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/6.out"
+  cp "$resp/2.out" "$resp/4.out"
+  cp "$resp/3.out" "$resp/5.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/6.out"
+  cp "$resp/2.out" "$resp/7.out"
+  cp "$resp/3.out" "$resp/8.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/9.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/10.out"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '
       . "$0/bin/backends/herdr.sh"
@@ -2211,7 +2379,7 @@ test_recovered_seed_rechecks_no_agent_at_close_boundary() {
   printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/6.out"
   cp "$resp/2.out" "$resp/7.out"
   printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/8.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1 · w:abcdefghijklmnopqrstuv"},{"tab_id":"w9:t2","label":"fm-race · w:abcdefghijklmnopqrstuv"}]}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"},{"tab_id":"w9:t2","label":"fm-race"}]}}\n' > "$resp/9.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/10.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/11.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/12.out"
@@ -3806,6 +3974,12 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_uses_exact_binding_when_display_labels_collide
 test_workspace_find_accepts_manually_renamed_bound_workspace
+test_workspace_find_treats_absent_bound_id_as_stale
+test_workspace_find_recovers_restart_from_exact_task_metadata
+test_secondmate_task_labels_remain_exact_with_hidden_ownership
+test_workspace_ensure_serializes_cross_task_creation
+test_create_task_normalizes_legacy_token_suffix_for_duplicates
+test_projection_seed_prune_is_explicitly_tokenless_for_secondmates
 test_workspace_find_rejects_stale_session_incarnation
 test_session_state_replacement_preserves_portable_incarnation
 test_workspace_token_rejects_reused_id_after_empty_restart

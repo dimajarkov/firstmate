@@ -129,10 +129,11 @@ Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-veri
 Secondmate homes therefore persist their exact workspace id and durable marker id in a home-local, session-keyed `state/.herdr-workspace-<digest>` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
 One named session's binding cannot overwrite another's, and a manually renamed workspace remains selected through its exact binding because labels are presentation-only.
-Each version 4 binding records both the session directory's atomically initialized Firstmate token and a random 128-bit workspace token carried by the workspace's live tab labels.
-The seeded tab receives the token immediately after creation, and every real secondmate task tab retains it as a ` · w:<token>` suffix while user-facing task discovery strips the suffix back to the logical label.
+Each version 5 binding records both the session directory's atomically initialized Firstmate token and a random 128-bit workspace token carried only in Firstmate-created pane environments.
+Secondmate task tabs retain their exact logical `fm-<id>` labels.
+After a Herdr restart, exact home-local task metadata can recover the workspace and initialize a fresh non-display token without trusting its presentation label or a reused workspace id.
 This live witness is independent of Herdr's delayed and replace-in-place `session.json` persistence, mutable `identity_cwd`, and supported state-file symlinks.
-Deleting a session removes its session token, while empty-state recreation or workspace-id reuse lacks the old live tab token and invalidates stale binding and recovery authority.
+Deleting a session removes its session token, while empty-state recreation or workspace-id reuse lacks the old live pane token and invalidates stale binding and recovery authority.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
 Each session's `state/.herdr-workspace-recovery-<digest>` record retains exact workspace and seeded-tab ids from creation until a task tab is created and the safely revalidated, single-pane, agent-free default tab is confirmed pruned.
 The primary home's established `firstmate` label lookup remains unchanged.
@@ -143,6 +144,7 @@ Existing live tasks are unaffected by this change: a task's meta already records
 A new lookup prefers a valid exact home-scoped binding and otherwise reuses exactly one legacy `2ndmate-<id>` workspace without renaming it.
 Ambiguous duplicate legacy labels are left untouched rather than guessed at.
 Adopting or creating a workspace publishes the exact binding for subsequent operations.
+Workspace discovery, identity initialization, creation, and binding publication are serialized per home and named session.
 New workspaces always use the current convention, and no destructive cleanup or manual migration is required for an already-running legacy workspace.
 
 Tab-per-task within each home's own workspace remains the durable default for the reason P2 originally found: attaching once shows every one of that home's tasks as a tab in one tab bar, switchable with `ctrl+b <n>`, matching how a captain already watches a tmux-backed fleet.
@@ -296,7 +298,7 @@ Use a distinct name such as `$want` instead; `tests/fm-backend-herdr.test.sh` gr
 `fm_backend_herdr_create_task` accepts that value as an explicit 4th argument and is the ONLY place allowed to act on it; it never re-derives "prunable" from a tab's label or the workspace's tab count.
 An ordinary adopted workspace's caller passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an unrelated adopted workspace's tabs to be pruned, regardless of how they are labeled.
 
-Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present, still carries its exact `1 · w:<token>` label, has exactly one pane, and is positively agent-free immediately before the exact close.
+Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present with its exact expected label, has exactly one pane, and is positively agent-free immediately before the exact close.
 Durable recovery carries seeded-tab prune authority forward only while those checks remain true; any registered agent status or split tab refuses pruning, and create or prune failure retains the record for a later retry.
 
 #### Incident: the 2026-07-02 self-kill
