@@ -57,7 +57,27 @@ echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
-[ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
+if [ -f "$RESP/$n.out" ]; then
+  if [ "${1:-}" = workspace ] && [ "${2:-}" = create ]; then
+    cwd=
+    args=("$@")
+    for ((i=0; i<${#args[@]}; i++)); do
+      [ "${args[$i]}" != --cwd ] || cwd=${args[$((i+1))]:-}
+    done
+    workspace=$(jq -r '.result.workspace.workspace_id // empty' "$RESP/$n.out")
+    if [ -n "$workspace" ] && [ -n "$cwd" ]; then
+      session_file="$RESP/../session-incarnation/session.json"
+      session_tmp="$session_file.tmp.$$"
+      jq --arg workspace "$workspace" --arg cwd "$cwd" '
+        .workspaces = ((.workspaces // [])
+          | map(select(.id != $workspace))
+          + [{id:$workspace, identity_cwd:$cwd}])
+      ' "$session_file" > "$session_tmp" \
+        && mv "$session_tmp" "$session_file"
+    fi
+  fi
+  cat "$RESP/$n.out"
+fi
 exit 0
 SH
   chmod +x "$fb/herdr"
@@ -101,14 +121,33 @@ STATE="${FM_FAKE_HERDR_STATE:?}"
 } >> "$LOG"
 
 jq_state() { jq "$@" "$STATE"; }
-save() { local tmp="$STATE.tmp.$$"; cat > "$tmp" && mv "$tmp" "$STATE"; }
+save() {
+  local tmp="$STATE.tmp.$$" session_dir session_file session_tmp
+  cat > "$tmp" && mv "$tmp" "$STATE" || return 1
+  session_dir=$(cd "$(dirname "$STATE")" 2>/dev/null && pwd -P)/session-incarnation
+  session_file="$session_dir/session.json"
+  if jq -e '.workspaces | length == 0' "$STATE" >/dev/null; then
+    rm -f "$session_file"
+    return 0
+  fi
+  session_tmp="$session_file.tmp.$$"
+  jq --arg session_dir "$session_dir" '{
+    version: 3,
+    workspaces: [.workspaces[] | {
+      id: .workspace_id,
+      identity_cwd: (.identity_cwd // ($session_dir + "/workspace-identity-" + .workspace_id))
+    }]
+  }' "$STATE" > "$session_tmp" \
+    && mv "$session_tmp" "$session_file"
+}
 
 cmd=${1:-}; sub=${2:-}
-ws=""; label=""
+ws=""; label=""; cwd=""
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --workspace) ws=${args[$((i+1))]:-} ;;
+    --cwd) cwd=${args[$((i+1))]:-} ;;
     --label) label=${args[$((i+1))]:-} ;;
   esac
 done
@@ -127,9 +166,9 @@ case "$cmd $sub" in
     ;;
   "workspace create")
     n=$(jq_state -r '.next'); wsid="w$n"; dn=$((n + 1))
-    jq_state --arg wsid "$wsid" --arg wlabel "$label" \
+    jq_state --arg wsid "$wsid" --arg wlabel "$label" --arg cwd "$cwd" \
       --arg tabid "$wsid:t$dn" --arg paneid "$wsid:p$dn" \
-      '.workspaces += [{workspace_id:$wsid, label:$wlabel}]
+      '.workspaces += [{workspace_id:$wsid, label:$wlabel, identity_cwd:$cwd}]
        | .tabs += [{tab_id:$tabid, label:"1", workspace_id:$wsid, pane_id:$paneid}]
        | .next = (.next + 2)' | save
     printf '{"result":{"workspace":{"workspace_id":"%s","label":"%s"},"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' \
@@ -210,15 +249,36 @@ herdr_test_session_incarnation() {  # <test-dir>
   ' "$ROOT"
 }
 
+herdr_test_workspace_identity() {  # <test-dir> <workspace-id>
+  local dir=$1 workspace=$2 identity session_file session_tmp
+  identity="$dir/session-incarnation/workspace-identity-$workspace"
+  mkdir -p "$identity"
+  session_file="$dir/session-incarnation/session.json"
+  [ -f "$session_file" ] || printf '{}\n' > "$session_file"
+  session_tmp="$session_file.tmp"
+  jq --arg workspace "$workspace" --arg identity "$identity" '
+    .workspaces = ((.workspaces // [])
+      | map(select(.id != $workspace))
+      + [{id:$workspace, identity_cwd:$identity}])
+  ' "$session_file" > "$session_tmp" \
+    && mv "$session_tmp" "$session_file" || return 1
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_workspace_identity_hash "$1"
+  ' "$ROOT" "$identity"
+}
+
 herdr_write_workspace_record() {  # <path> <home-id> <session> <workspace> <test-dir> [seeded-tab]
-  local path=$1 home_id=$2 session=$3 workspace=$4 dir=$5 seeded_tab=${6:-} incarnation
+  local path=$1 home_id=$2 session=$3 workspace=$4 dir=$5 seeded_tab=${6:-} incarnation workspace_identity
   incarnation=$(herdr_test_session_incarnation "$dir") || return 1
+  workspace_identity=$(herdr_test_workspace_identity "$dir" "$workspace") || return 1
   {
-    printf 'version=3\n'
+    printf 'version=4\n'
     printf 'home_id=%s\n' "$home_id"
     printf 'session=%s\n' "$session"
     printf 'session_incarnation=%s\n' "$incarnation"
     printf 'workspace_id=%s\n' "$workspace"
+    printf 'workspace_identity=%s\n' "$workspace_identity"
     [ -z "$seeded_tab" ] || printf 'seeded_tab_id=%s\n' "$seeded_tab"
   } > "$path"
 }
@@ -685,7 +745,7 @@ test_container_ensure_creates_with_no_focus_flag() {
 }
 
 test_container_ensure_uses_secondmate_home_label() {
-  local dir log resp fb out home binding recovery
+  local dir log resp fb out home binding recovery workspace_identity
   dir="$TMP_ROOT/container-secondmate-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home/state"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
@@ -696,12 +756,17 @@ test_container_ensure_uses_secondmate_home_label() {
   out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
-  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2🏴‍☠️-sshhip-h7' \
+  assert_contains "$(cat "$log")" "/state/.herdr-workspace-identity." \
+    "container_ensure did not create a durable workspace identity marker"
+  assert_contains "$(cat "$log")" $'\x1f''--label'$'\x1f''2🏴‍☠️-sshhip-h7' \
     "container_ensure did not create the workspace under this secondmate home's own label"
   binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
   recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
   [ "$(sed -n 's/^workspace_id=//p' "$binding")" = w9 ] \
     || fail "container_ensure did not publish the exact secondmate workspace binding"
+  workspace_identity=$(sed -n 's/^workspace_identity=//p' "$binding")
+  [ "${#workspace_identity}" -eq 64 ] \
+    || fail "container_ensure did not bind the workspace's durable identity"
   [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
     || fail "container_ensure did not retain the seeded-tab recovery authority through task creation"
   pass "fm_backend_herdr_container_ensure: creates the workspace under the SECONDMATE home's own label, not 'firstmate'"
@@ -1769,8 +1834,8 @@ test_workspace_find_rejects_stale_session_incarnation() {
   home="$TMP_ROOT/find-stale-incarnation-home"; mkdir -p "$home/state"; printf 'stale-secondmate\n' > "$home/.fm-secondmate-home"
   binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
   recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
-  printf 'version=3\nhome_id=stale-secondmate\nsession=fmtest\nsession_incarnation=%064d\nworkspace_id=w7\n' 0 > "$binding"
-  printf 'version=3\nhome_id=stale-secondmate\nsession=fmtest\nsession_incarnation=%064d\nworkspace_id=w7\nseeded_tab_id=w7:t1\n' 0 > "$recovery"
+  printf 'version=4\nhome_id=stale-secondmate\nsession=fmtest\nsession_incarnation=%064d\nworkspace_id=w7\nworkspace_identity=%064d\n' 0 0 > "$binding"
+  printf 'version=4\nhome_id=stale-secondmate\nsession=fmtest\nsession_incarnation=%064d\nworkspace_id=w7\nworkspace_identity=%064d\nseeded_tab_id=w7:t1\n' 0 0 > "$recovery"
   printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"unrelated recreated-session workspace"}]}}\n' > "$resp/1.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1806,7 +1871,7 @@ test_session_state_replacement_preserves_portable_incarnation() {
   herdr_write_workspace_record "$binding" state-replaced-secondmate fmtest w7 "$dir"
   before=$(sed -n 's/^session_incarnation=//p' "$binding")
   replacement="$dir/session-incarnation/session.updated"
-  printf '{"version":3}\n' > "$replacement"
+  jq '.version = 4' "$dir/session-incarnation/session.json" > "$replacement"
   mv -f "$replacement" "$dir/session-incarnation/session.json"
   printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"manually renamed"}]}}\n' > "$resp/1.out"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1818,6 +1883,37 @@ test_session_state_replacement_preserves_portable_incarnation() {
   [ "$after" = "$before" ] \
     || fail "ordinary session state replacement rotated its incarnation token"
   pass "Herdr workspace bindings: atomic session state replacement preserves exact authority"
+}
+
+test_workspace_identity_rejects_reused_id_after_empty_restart() {
+  local dir log resp fb home binding recovery out status
+  dir="$TMP_ROOT/workspace-identity-reused"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/workspace-identity-reused-home"; mkdir -p "$home/state"
+  printf 'identity-secondmate\n' > "$home/.fm-secondmate-home"
+  fb=$(make_herdr_fakebin "$dir")
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  herdr_write_workspace_record "$binding" identity-secondmate fmtest w7 "$dir"
+  cp "$binding" "$recovery"
+  printf 'seeded_tab_id=w7:t1\n' >> "$recovery"
+  rm -f "$dir/session-incarnation/session.json"
+  printf '{"version":3,"workspaces":[{"id":"w7","identity_cwd":"/unrelated/recreated/workspace"}]}\n' \
+    > "$dir/session-incarnation/session.json"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"unrelated recreated-session workspace"}]}}\n' > "$resp/1.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ -z "$out" ] \
+    || fail "empty-session restart reused stale workspace authority: '$out'"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_recovery_seeded_tab fmtest w7' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "empty-session restart retained stale seeded-tab prune authority"
+  assert_not_contains "$(cat "$log")" $'\x1ftab\x1flist' \
+    "stale workspace identity inspected a reused workspace id"
+  assert_not_contains "$(cat "$log")" $'\x1fpane\x1fclose' \
+    "stale workspace identity closed a pane in the recreated session"
+  pass "Herdr workspace bindings: empty-session restarts reject reused workspace ids"
 }
 
 test_session_directory_recreation_rotates_portable_incarnation() {
@@ -1909,6 +2005,7 @@ test_workspace_records_are_isolated_per_session() {
   out=$(FM_HOME="$home" bash -c '
     . "$0/bin/backends/herdr.sh"
     fm_backend_herdr_session_incarnation() { printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+    fm_backend_herdr_workspace_identity() { printf "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; }
     fm_backend_herdr_workspace_binding_publish session-a w1
     fm_backend_herdr_workspace_recovery_publish session-a w1 w1:t1
     fm_backend_herdr_workspace_binding_publish session-b w2
@@ -1945,6 +2042,7 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
   dir="$TMP_ROOT/ensure-legacy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/ensure-legacy-home"; mkdir -p "$home/state"; printf 'legacy-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"2ndmate-legacy-secondmate"}]}}\n' > "$resp/1.out"
+  herdr_test_workspace_identity "$dir" w1 >/dev/null
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
@@ -1966,6 +2064,7 @@ test_workspace_binding_accepts_only_in_home_state_symlinks() {
   FM_HOME="$home" bash -c '
     . "$0/bin/backends/herdr.sh"
     fm_backend_herdr_session_incarnation() { printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+    fm_backend_herdr_workspace_identity() { printf "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; }
     fm_backend_herdr_workspace_binding_publish fmtest w-safe
   ' "$ROOT" \
     || fail "an in-home state symlink should accept binding publication"
@@ -1977,6 +2076,7 @@ test_workspace_binding_accepts_only_in_home_state_symlinks() {
   out=$(FM_HOME="$home" bash -c '
     . "$0/bin/backends/herdr.sh"
     fm_backend_herdr_session_incarnation() { printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+    fm_backend_herdr_workspace_identity() { printf "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; }
     fm_backend_herdr_workspace_binding_publish fmtest w-unsafe
   ' "$ROOT" 2>&1)
   status=$?
@@ -3750,6 +3850,7 @@ test_workspace_find_uses_exact_binding_when_display_labels_collide
 test_workspace_find_accepts_manually_renamed_bound_workspace
 test_workspace_find_rejects_stale_session_incarnation
 test_session_state_replacement_preserves_portable_incarnation
+test_workspace_identity_rejects_reused_id_after_empty_restart
 test_session_directory_recreation_rotates_portable_incarnation
 test_session_incarnation_initialization_has_one_winner
 test_session_incarnation_does_not_require_birthtime_stat

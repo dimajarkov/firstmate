@@ -129,7 +129,9 @@ Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-veri
 Secondmate homes therefore persist their exact workspace id and durable marker id in a home-local, session-keyed `state/.herdr-workspace-<digest>` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
 One named session's binding cannot overwrite another's, and a manually renamed workspace remains selected through its exact binding because labels are presentation-only.
-Each version 3 binding also records the session directory's atomically initialized Firstmate token; every concurrent home observes one winner, ordinary `session.json` replacement and stop/start preserve it, and deleting and recreating a named session removes it with the session directory.
+Each version 4 binding records both the session directory's atomically initialized Firstmate token and the digest of the workspace's persisted `identity_cwd`.
+Every newly created secondmate workspace receives a unique home-local identity directory as that immutable cwd, so concurrent homes observe one session-token winner while ordinary `session.json` replacement, stop/start, and presentation-only renames preserve the exact binding.
+Deleting a session removes its token, while empty-state recreation or workspace-id reuse produces a different workspace identity and invalidates stale binding and recovery authority.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
 Each session's `state/.herdr-workspace-recovery-<digest>` record retains exact workspace and seeded-tab ids from creation until a task tab is created and the safely revalidated, single-pane, agent-free default tab is confirmed pruned.
 The primary home's established `firstmate` label lookup remains unchanged.
