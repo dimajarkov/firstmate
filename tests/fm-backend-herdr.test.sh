@@ -2078,11 +2078,8 @@ test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
   dir="$TMP_ROOT/spawn-primary-parent"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; home="$dir/home"; mkdir -p "$home"; : > "$log"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/1.out"
-  cp "$resp/1.out" "$resp/2.out"
-  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"}]}}\n' > "$resp/3.out"
-  cp "$resp/3.out" "$resp/4.out"
-  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/5.out"
-  cp "$resp/5.out" "$resp/6.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
