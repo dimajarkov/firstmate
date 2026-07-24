@@ -87,9 +87,10 @@ By default, Herdr workspace labels are derived from `FM_HOME`: the primary home 
 This is a shared convention, not a per-home preference or configuration setting.
 The durable marker id remains the routing identity, exact recorded targets remain endpoint authority, and the label is presentation.
 Each secondmate home records its exact current workspace id in a session-keyed `state/.herdr-workspace-<digest>` record, so suffix-colliding ids such as `foo` and `foo-secondmate` remain isolated even though both display as `2🏴‍☠️-foo`, and one named Herdr session cannot overwrite another's binding.
-The version 4 record binds the durable home and workspace ids to both an atomically initialized session token and the workspace's immutable identity-cwd digest.
-New secondmate workspaces use a unique home-local identity directory as their creation cwd, so ordinary `session.json` replacement, stop/start, and presentation-only workspace renames preserve authority while session deletion, empty-state recreation, or workspace-id reuse invalidates stale records.
-During transition, a single live legacy `2ndmate-<id>` workspace is reused without renaming and receives that home-scoped exact binding, so its recorded task endpoints continue to work.
+The version 4 record binds the durable home and workspace ids to both an atomically initialized session token and a random 128-bit workspace token carried by that workspace's live tab labels.
+Secondmate tab labels retain their logical name and append ` · w:<token>`; listing and bare-selector paths remove or recognize that suffix so task ids remain unchanged.
+Live token validation is immediate after creation, survives ordinary state-file replacement, stop/start, and presentation-only workspace renames, and rejects stale authority after empty-state recreation or workspace-id reuse.
+During transition, a single live legacy `2ndmate-<id>` workspace is reused without renaming, its existing tabs receive one workspace token, and it receives that home-scoped exact binding so its recorded task endpoints continue to work.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [`docs/herdr-backend.md`](herdr-backend.md#optional-disposable-single-task-presentation-spaces) owns its behavior, safety limits, and recovery contract.
 The flag is default-off and inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.

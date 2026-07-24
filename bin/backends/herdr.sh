@@ -259,36 +259,6 @@ fm_backend_herdr_session_incarnation_prepare() {  # <session>
   fm_backend_herdr_session_incarnation "$session"
 }
 
-fm_backend_herdr_workspace_identity_hash() {  # <identity>
-  local identity=$1 hash
-  case "$identity" in ''|*$'\n'*|*$'\r'*) return 1 ;; esac
-  if command -v shasum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$identity" | shasum -a 256 2>/dev/null | awk '{print $1}')
-  elif command -v sha256sum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$identity" | sha256sum 2>/dev/null | awk '{print $1}')
-  else
-    return 1
-  fi
-  [ "${#hash}" -eq 64 ] || return 1
-  case "$hash" in *[!0-9a-f]*) return 1 ;; esac
-  printf '%s' "$hash"
-}
-
-fm_backend_herdr_workspace_identity() {  # <session> <workspace-id>
-  local session=$1 workspace=$2 dir session_file identity
-  dir=$(fm_backend_herdr_session_dir "$session") || return 1
-  session_file="$dir/session.json"
-  [ -f "$session_file" ] && [ ! -L "$session_file" ] || return 1
-  identity=$(jq -er --arg workspace "$workspace" '
-    [.workspaces[]?
-      | select(.id == $workspace)
-      | select((.identity_cwd | type) == "string" and (.identity_cwd | length) > 0)
-      | .identity_cwd]
-    | if length == 1 then .[0] else empty end
-  ' "$session_file" 2>/dev/null) || return 1
-  fm_backend_herdr_workspace_identity_hash "$identity"
-}
-
 fm_backend_herdr_workspace_state_dir() {
   local home state_path state
   [ -d "$FM_HOME" ] || return 1
@@ -310,13 +280,64 @@ fm_backend_herdr_workspace_state_dir() {
   esac
 }
 
-fm_backend_herdr_workspace_identity_prepare() {
-  local state identity
-  state=$(fm_backend_herdr_workspace_state_dir) || return 1
-  [ -d "$state" ] || return 1
-  identity=$(mktemp -d "$state/.herdr-workspace-identity.XXXXXX") || return 1
-  chmod 0700 "$identity" || { rmdir "$identity" 2>/dev/null || :; return 1; }
-  printf '%s' "$identity"
+fm_backend_herdr_workspace_token_generate() {
+  local token
+  token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null \
+    | base64 \
+    | tr '+/' '-_' \
+    | tr -d '=\r\n') || return 1
+  [ "${#token}" -eq 22 ] || return 1
+  case "$token" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+  printf '%s' "$token"
+}
+
+fm_backend_herdr_workspace_tab_label() {  # <label> <workspace-token>
+  local label=$1 token=$2
+  case "$label" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  [ "${#token}" -eq 22 ] || return 1
+  case "$token" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+  printf '%s · w:%s' "$label" "$token"
+}
+
+fm_backend_herdr_workspace_token_present() {  # <session> <workspace-id> <workspace-token>
+  local session=$1 workspace=$2 token=$3 tabs count
+  [ "${#token}" -eq 22 ] || return 1
+  case "$token" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 2
+  count=$(printf '%s' "$tabs" | jq -er --arg suffix " · w:$token" '
+    select((.result.tabs | type) == "array")
+    | [.result.tabs[]?
+      | select((.label | type) == "string" and (.label | endswith($suffix)))]
+    | length
+  ' 2>/dev/null) || return 2
+  [ "$count" -gt 0 ]
+}
+
+fm_backend_herdr_workspace_tokenize_tabs() {  # <session> <workspace-id> <workspace-token>
+  local session=$1 workspace=$2 token=$3 tabs ids tab label base tokenized
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
+  ids=$(printf '%s' "$tabs" | jq -er '
+    select((.result.tabs | type) == "array" and (.result.tabs | length) > 0)
+    | .result.tabs[]
+    | select((.tab_id | type) == "string" and (.tab_id | length) > 0)
+    | .tab_id
+  ' 2>/dev/null) || return 1
+  while IFS= read -r tab; do
+    [ -n "$tab" ] || continue
+    label=$(printf '%s' "$tabs" | jq -er --arg tab "$tab" '
+      [.result.tabs[] | select(.tab_id == $tab and (.label | type) == "string") | .label]
+      | if length == 1 then .[0] else empty end
+    ' 2>/dev/null) || return 1
+    case "$label" in *$'\n'*|*$'\r'*) return 1 ;; esac
+    base=$(printf '%s' "$label" | sed -E 's/ · w:[A-Za-z0-9_-]{22}$//')
+    tokenized=$(fm_backend_herdr_workspace_tab_label "$base" "$token") || return 1
+    [ "$label" = "$tokenized" ] \
+      || fm_backend_herdr_cli "$session" tab rename "$tab" "$tokenized" >/dev/null 2>&1 \
+      || return 1
+  done <<EOF
+$ids
+EOF
+  fm_backend_herdr_workspace_token_present "$session" "$workspace" "$token"
 }
 
 fm_backend_herdr_workspace_record_path() {  # <record-name> <session>
@@ -359,7 +380,7 @@ fm_backend_herdr_workspace_binding_preflight() {  # <session>
 }
 
 fm_backend_herdr_workspace_record_static_id() {
-  local record=$1 session=$2 version home_id bound_session bound_incarnation current_incarnation workspace bound_identity expected_id
+  local record=$1 session=$2 version home_id bound_session bound_incarnation current_incarnation workspace bound_token expected_id
   expected_id=$(fm_backend_herdr_secondmate_id) || return 1
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   version=$(fm_backend_herdr_workspace_binding_field "$record" version) || return 1
@@ -367,7 +388,7 @@ fm_backend_herdr_workspace_record_static_id() {
   bound_session=$(fm_backend_herdr_workspace_binding_field "$record" session) || return 1
   bound_incarnation=$(fm_backend_herdr_workspace_binding_field "$record" session_incarnation) || return 1
   workspace=$(fm_backend_herdr_workspace_binding_field "$record" workspace_id) || return 1
-  bound_identity=$(fm_backend_herdr_workspace_binding_field "$record" workspace_identity) || return 1
+  bound_token=$(fm_backend_herdr_workspace_binding_field "$record" workspace_token) || return 1
   current_incarnation=$(fm_backend_herdr_session_incarnation "$session") || return 1
   [ "$version" = 4 ] \
     && [ "$home_id" = "$expected_id" ] \
@@ -378,37 +399,65 @@ fm_backend_herdr_workspace_record_static_id() {
     ;;
   esac
   [ "${#bound_incarnation}" -eq 64 ] || return 1
-  case "$bound_identity" in ''|*[!0-9a-f]*) return 1 ;; esac
-  [ "${#bound_identity}" -eq 64 ] || return 1
+  case "$bound_token" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+  [ "${#bound_token}" -eq 22 ] || return 1
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   printf '%s' "$workspace"
 }
 
 fm_backend_herdr_workspace_record_bound_id() {
-  local record=$1 session=$2 workspace bound_identity current_identity
+  local record=$1 session=$2 workspace bound_token status
   workspace=$(fm_backend_herdr_workspace_record_static_id "$record" "$session") || return 1
-  bound_identity=$(fm_backend_herdr_workspace_binding_field "$record" workspace_identity) || return 1
-  current_identity=$(fm_backend_herdr_workspace_identity "$session" "$workspace") || return 1
-  [ "$bound_identity" = "$current_identity" ] || return 1
+  bound_token=$(fm_backend_herdr_workspace_binding_field "$record" workspace_token) || return 1
+  if fm_backend_herdr_workspace_token_present "$session" "$workspace" "$bound_token"; then
+    :
+  else
+    status=$?
+    return "$status"
+  fi
   printf '%s' "$workspace"
 }
 
 fm_backend_herdr_workspace_bound_id() {  # <session>
-  local session=$1 binding recovery record workspace
+  local session=$1 binding recovery record workspace status unreadable
+  recovery=$(fm_backend_herdr_workspace_record_path \
+    "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$session") || return 1
+  binding=$(fm_backend_herdr_workspace_record_path \
+    "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session") || return 1
+  unreadable=0
+  for record in "$recovery" "$binding"; do
+    if workspace=$(fm_backend_herdr_workspace_record_bound_id "$record" "$session"); then
+      :
+    else
+      status=$?
+      [ "$status" -ne 2 ] || unreadable=1
+      continue
+    fi
+    printf '%s' "$workspace"
+    return 0
+  done
+  [ "$unreadable" -eq 0 ] || return 2
+  return 1
+}
+
+fm_backend_herdr_workspace_static_token() {  # <session> <workspace-id>
+  local session=$1 workspace=$2 binding recovery record bound token
   recovery=$(fm_backend_herdr_workspace_record_path \
     "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$session") || return 1
   binding=$(fm_backend_herdr_workspace_record_path \
     "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session") || return 1
   for record in "$recovery" "$binding"; do
-    workspace=$(fm_backend_herdr_workspace_record_bound_id "$record" "$session") || continue
-    printf '%s' "$workspace"
+    bound=$(fm_backend_herdr_workspace_record_static_id "$record" "$session") || continue
+    [ "$bound" = "$workspace" ] || continue
+    token=$(fm_backend_herdr_workspace_binding_field "$record" workspace_token) || continue
+    printf '%s' "$token"
     return 0
   done
   return 1
 }
 
-fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <workspace-id> [seeded-tab-id] [workspace-identity]
-  local record_name=$1 session=$2 workspace=$3 seeded_tab=${4:-} workspace_identity=${5:-} id status incarnation current_identity state record tmp
+fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <workspace-id> <workspace-token> [seeded-tab-id]
+  local record_name=$1 session=$2 workspace=$3 workspace_token=$4 seeded_tab=${5:-} id status incarnation state record tmp
   if id=$(fm_backend_herdr_secondmate_id); then
     :
   else
@@ -420,13 +469,8 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   case "$seeded_tab" in *[[:space:]]*) return 1 ;; esac
   incarnation=$(fm_backend_herdr_session_incarnation_prepare "$session") || return 1
-  current_identity=$(fm_backend_herdr_workspace_identity "$session" "$workspace") || return 1
-  if [ -z "$workspace_identity" ]; then
-    workspace_identity=$current_identity
-  fi
-  case "$workspace_identity" in ''|*[!0-9a-f]*) return 1 ;; esac
-  [ "${#workspace_identity}" -eq 64 ] || return 1
-  [ "$workspace_identity" = "$current_identity" ] || return 1
+  case "$workspace_token" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+  [ "${#workspace_token}" -eq 22 ] || return 1
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
   case "$record_name" in
     "$FM_BACKEND_HERDR_WORKSPACE_BINDING") [ -z "$seeded_tab" ] || return 1 ;;
@@ -449,7 +493,7 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
     printf 'session=%s\n' "$session"
     printf 'session_incarnation=%s\n' "$incarnation"
     printf 'workspace_id=%s\n' "$workspace"
-    printf 'workspace_identity=%s\n' "$workspace_identity"
+    printf 'workspace_token=%s\n' "$workspace_token"
     [ -z "$seeded_tab" ] || printf 'seeded_tab_id=%s\n' "$seeded_tab"
   } > "$tmp"; then
     rm -f "$tmp"
@@ -458,8 +502,8 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   mv -f "$tmp" "$record" || { rm -f "$tmp"; return 1; }
 }
 
-fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id> [workspace-identity]
-  local session=$1 workspace=$2 workspace_identity=${3:-} status
+fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id> <workspace-token>
+  local session=$1 workspace=$2 workspace_token=${3:-} status
   if fm_backend_herdr_secondmate_id >/dev/null; then
     :
   else
@@ -468,7 +512,7 @@ fm_backend_herdr_workspace_binding_publish() {  # <session> <workspace-id> [work
     return "$status"
   fi
   fm_backend_herdr_workspace_record_publish \
-    "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session" "$workspace" "" "$workspace_identity"
+    "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session" "$workspace" "$workspace_token"
 }
 
 fm_backend_herdr_workspace_recovery_clear() {  # <session> [workspace-id]
@@ -490,17 +534,19 @@ fm_backend_herdr_workspace_recovery_clear() {  # <session> [workspace-id]
   fi
 }
 
-fm_backend_herdr_workspace_recovery_publish() {  # <session> <workspace-id> [seeded-tab-id] [workspace-identity]
+fm_backend_herdr_workspace_recovery_publish() {  # <session> <workspace-id> <workspace-token> [seeded-tab-id]
   fm_backend_herdr_workspace_record_publish \
-    "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$1" "$2" "${3:-}" "${4:-}"
+    "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$1" "$2" "$3" "${4:-}"
 }
 
 fm_backend_herdr_workspace_recovery_seeded_tab() {
-  local session=$1 workspace=$2 recovery bound seeded_tab tabs result pane pane_status agent_state
+  local session=$1 workspace=$2 recovery bound seeded_tab token expected_label tabs result pane pane_status agent_state
   recovery=$(fm_backend_herdr_workspace_record_path \
     "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$session") || return 1
-  bound=$(fm_backend_herdr_workspace_record_bound_id "$recovery" "$session") || return 1
+  bound=$(fm_backend_herdr_workspace_record_static_id "$recovery" "$session") || return 1
   [ "$bound" = "$workspace" ] || return 1
+  token=$(fm_backend_herdr_workspace_binding_field "$recovery" workspace_token) || return 1
+  expected_label=$(fm_backend_herdr_workspace_tab_label 1 "$token") || return 1
   if seeded_tab=$(fm_backend_herdr_workspace_binding_field "$recovery" seeded_tab_id); then
     :
   elif grep -q '^seeded_tab_id=' "$recovery" 2>/dev/null; then
@@ -510,10 +556,12 @@ fm_backend_herdr_workspace_recovery_seeded_tab() {
   fi
   case "$seeded_tab" in ''|*[[:space:]]*) return 2 ;; esac
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 2
-  result=$(printf '%s' "$tabs" | jq -er --arg seeded_tab "$seeded_tab" '
+  result=$(printf '%s' "$tabs" | jq -er --arg seeded_tab "$seeded_tab" --arg expected_label "$expected_label" --arg suffix " · w:$token" '
     (.result.tabs // null) as $tabs
     | select(($tabs | type) == "array")
-    | [$tabs[] | select(.tab_id == $seeded_tab and .label == "1")]
+    | select(any($tabs[]?;
+        (.label | type) == "string" and (.label | endswith($suffix))))
+    | [$tabs[] | select(.tab_id == $seeded_tab and .label == $expected_label)]
     | if length == 1 then $seeded_tab
       elif length == 0 then "absent"
       else empty
@@ -1277,7 +1325,13 @@ fm_backend_herdr_workspace_find() {  # <session>
      || [ -e "$recovery" ] || [ -L "$recovery" ]; then
     has_record=1
   fi
-  bound=$(fm_backend_herdr_workspace_bound_id "$session" 2>/dev/null || true)
+  if bound=$(fm_backend_herdr_workspace_bound_id "$session" 2>/dev/null); then
+    :
+  else
+    status=$?
+    [ "$status" -ne 2 ] || return 2
+    bound=""
+  fi
   if [ -n "$bound" ]; then
     matches=$(printf '%s' "$list" | jq -r --arg workspace "$bound" \
       '.result.workspaces[]? | select(.workspace_id == $workspace) | .workspace_id' 2>/dev/null)
@@ -1344,7 +1398,8 @@ fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-labe
 # seeded_tab_id at all (see FM_BACKEND_HERDR_WS_SEEDED_TAB_ID below).
 #
 # Defense in depth on top of that gate (not the primary safety mechanism):
-# re-verify <seeded_tab_id> is still present, still carries label "1" (a
+# re-verify <seeded_tab_id> is still present, still carries its exact
+# workspace-token label (a
 # human could have renamed or repurposed it in the interim), and refuse to
 # close it if its pane hosts an actively working agent per herdr's own
 # agent-state detection (`agent get`) - belt-and-suspenders against any other
@@ -1359,12 +1414,20 @@ fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-labe
 # exists alongside it, never right after workspace creation - and this
 # function independently re-checks the tab count as a second layer.
 fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_id> <seeded_tab_id> [focus-preserving]
-  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct} tabs tab_count target_count pane_id state after
+  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct} token expected_label secondmate_status tabs tab_count target_count pane_id state after
   [ -n "$tab_id" ] || return 0
+  if fm_backend_herdr_secondmate_id >/dev/null; then
+    token=$(fm_backend_herdr_workspace_static_token "$session" "$wsid") || return 1
+    expected_label=$(fm_backend_herdr_workspace_tab_label 1 "$token") || return 1
+  else
+    secondmate_status=$?
+    [ "$secondmate_status" -eq 1 ] || return "$secondmate_status"
+    expected_label=1
+  fi
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
   tab_count=$(printf '%s' "$tabs" | jq -er '(.result.tabs // null) as $tabs | select(($tabs | type) == "array") | $tabs | length' 2>/dev/null) || return 1
-  target_count=$(printf '%s' "$tabs" | jq -er --arg tab "$tab_id" \
-    '[.result.tabs[]? | select(.tab_id == $tab and .label == "1")] | length' 2>/dev/null) || return 1
+  target_count=$(printf '%s' "$tabs" | jq -er --arg tab "$tab_id" --arg expected_label "$expected_label" \
+    '[.result.tabs[]? | select(.tab_id == $tab and .label == $expected_label)] | length' 2>/dev/null) || return 1
   [ "$target_count" -eq 0 ] && return 0
   [ "$target_count" -eq 1 ] || return 1
   case "$tab_count" in ''|*[!0-9]*|0|1) return 1 ;; esac
@@ -1410,13 +1473,23 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
 # attach to). --no-focus is passed unconditionally anyway, for defense in
 # depth and because it is a no-op in the already-safe case.
 fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
-  local session=$1 cwd=$2 wsid out label root_pane seeded_tab recovery_status rollback_list recovery_retained workspace_identity_path workspace_identity workspace_identity_owned identity_status
+  local session=$1 cwd=$2 wsid out label root_pane seeded_tab recovery_status rollback_list recovery_retained workspace_token secondmate_status
   FM_BACKEND_HERDR_WS_ID=""
   FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=""
   label=$(fm_backend_herdr_workspace_label) || return 1
   fm_backend_herdr_workspace_binding_preflight "$session" || return 1
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 1
   if [ -n "$wsid" ]; then
+    if workspace_token=$(fm_backend_herdr_workspace_static_token "$session" "$wsid" 2>/dev/null); then
+      :
+    elif fm_backend_herdr_secondmate_id >/dev/null; then
+      workspace_token=$(fm_backend_herdr_workspace_token_generate) || return 1
+      fm_backend_herdr_workspace_tokenize_tabs "$session" "$wsid" "$workspace_token" || return 1
+    else
+      secondmate_status=$?
+      [ "$secondmate_status" -eq 1 ] || return "$secondmate_status"
+      workspace_token=""
+    fi
     if seeded_tab=$(fm_backend_herdr_workspace_recovery_seeded_tab "$session" "$wsid" 2>/dev/null); then
       :
     else
@@ -1424,40 +1497,43 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
       [ "$recovery_status" -eq 1 ] || return "$recovery_status"
       seeded_tab=""
     fi
-    fm_backend_herdr_workspace_binding_publish "$session" "$wsid" || return 1
+    fm_backend_herdr_workspace_binding_publish "$session" "$wsid" "$workspace_token" || return 1
     [ -n "$seeded_tab" ] || fm_backend_herdr_workspace_recovery_clear "$session" "$wsid" || return 1
     FM_BACKEND_HERDR_WS_ID=$wsid
     FM_BACKEND_HERDR_WS_SEEDED_TAB_ID=$seeded_tab
     printf '%s' "$wsid"
     return 0
   fi
-  workspace_identity_owned=0
   if fm_backend_herdr_secondmate_id >/dev/null; then
-    workspace_identity_path=$(fm_backend_herdr_workspace_identity_prepare) || return 1
-    workspace_identity_owned=1
+    workspace_token=$(fm_backend_herdr_workspace_token_generate) || return 1
   else
-    identity_status=$?
-    [ "$identity_status" -eq 1 ] || return "$identity_status"
-    workspace_identity_path=$cwd
+    secondmate_status=$?
+    [ "$secondmate_status" -eq 1 ] || return "$secondmate_status"
+    workspace_token=""
   fi
-  workspace_identity=$(fm_backend_herdr_workspace_identity_hash "$workspace_identity_path") \
-    || {
-      [ "$workspace_identity_owned" -ne 1 ] || rmdir "$workspace_identity_path" 2>/dev/null || :
-      return 1
-    }
-  out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$workspace_identity_path" --label "$label" --no-focus 2>/dev/null) || return 1
+  out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   [ -n "$wsid" ] || return 1
   root_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   seeded_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   recovery_retained=0
-  if fm_backend_herdr_workspace_recovery_publish "$session" "$wsid" "$seeded_tab" "$workspace_identity"; then
+  if [ -n "$workspace_token" ]; then
+    [ -n "$seeded_tab" ] || return 1
+    if ! fm_backend_herdr_cli "$session" tab rename "$seeded_tab" \
+      "$(fm_backend_herdr_workspace_tab_label 1 "$workspace_token")" >/dev/null 2>&1; then
+      echo "error: failed to mark exact herdr workspace '$wsid' in session '$session'" >&2
+    elif fm_backend_herdr_workspace_recovery_publish "$session" "$wsid" "$workspace_token" "$seeded_tab"; then
+      recovery_retained=1
+    else
+      echo "error: failed to retain exact recovery binding for herdr workspace '$wsid' in session '$session'" >&2
+    fi
+  elif fm_backend_herdr_workspace_recovery_publish "$session" "$wsid" "$workspace_token" "$seeded_tab"; then
     recovery_retained=1
   else
     echo "error: failed to retain exact recovery binding for herdr workspace '$wsid' in session '$session'" >&2
   fi
   if [ "$recovery_retained" -ne 1 ] \
-     || ! fm_backend_herdr_workspace_binding_publish "$session" "$wsid" "$workspace_identity"; then
+     || ! fm_backend_herdr_workspace_binding_publish "$session" "$wsid" "$workspace_token"; then
     if [ -n "$root_pane" ]; then
       fm_backend_herdr_cli "$session" pane close "$root_pane" >/dev/null 2>&1 || :
     elif [ -n "$seeded_tab" ]; then
@@ -1471,7 +1547,6 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd>
     ' >/dev/null 2>&1; then
       [ "$recovery_retained" -ne 1 ] \
         || fm_backend_herdr_workspace_recovery_clear "$session" "$wsid" || :
-      [ "$workspace_identity_owned" -ne 1 ] || rmdir "$workspace_identity_path" 2>/dev/null || :
     fi
     return 1
   fi
@@ -1661,11 +1736,26 @@ fm_backend_herdr_agent_alive() {  # <target>
 # an empty 4th arg, so this function never even queries for a prune candidate
 # in that case. Echoes "<tab_id> <pane_id>" on success.
 fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id>
-  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
+  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid workspace_token task_label secondmate_status list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
   session=${container%%:*}
   wsid=${container#*:}
+  task_label=$label
+  if fm_backend_herdr_secondmate_id >/dev/null; then
+    workspace_token=$(fm_backend_herdr_workspace_static_token "$session" "$wsid") || return 1
+    task_label=$(fm_backend_herdr_workspace_tab_label "$label" "$workspace_token") || return 1
+  else
+    secondmate_status=$?
+    [ "$secondmate_status" -eq 1 ] || return "$secondmate_status"
+  fi
   list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
-  dup_tabs=$(printf '%s' "$list" | jq -r --arg want "$label" 'if (.result.tabs | type) == "array" then .result.tabs[] | select(.label == $want) | .tab_id else error("missing result.tabs") end' 2>/dev/null) || {
+  if [ -n "${workspace_token:-}" ] && ! printf '%s' "$list" | jq -e --arg suffix " · w:$workspace_token" '
+    (.result.tabs | type) == "array"
+    and any(.result.tabs[]?;
+      (.label | type) == "string" and (.label | endswith($suffix)))
+  ' >/dev/null 2>&1; then
+    return 1
+  fi
+  dup_tabs=$(printf '%s' "$list" | jq -r --arg want "$task_label" 'if (.result.tabs | type) == "array" then .result.tabs[] | select(.label == $want) | .tab_id else error("missing result.tabs") end' 2>/dev/null) || {
     echo "error: could not parse herdr tab list output for workspace $wsid (session $session)" >&2
     return 1
   }
@@ -1683,7 +1773,7 @@ fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_ta
 $dup_tabs
 EOF
   fi
-  out=$(fm_backend_herdr_cli "$session" tab create --workspace "$wsid" --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
+  out=$(fm_backend_herdr_cli "$session" tab create --workspace "$wsid" --cwd "$cwd" --label "$task_label" --no-focus 2>/dev/null) || return 1
   tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
@@ -1709,7 +1799,7 @@ EOF
       echo "error: could not parse herdr tab list output for workspace $wsid (session $session)" >&2
       return 1
     fi
-    remaining_dup_tabs=$(printf '%s' "$list" | jq -r --arg want "$label" --arg replacement "$tab_id" \
+    remaining_dup_tabs=$(printf '%s' "$list" | jq -r --arg want "$task_label" --arg replacement "$tab_id" \
       '.result.tabs[]? | select(.label == $want and .tab_id != $replacement) | .tab_id' 2>/dev/null)
     remaining_dup_tabs=${remaining_dup_tabs//$'\n'/ }
     if [ -n "$remaining_dup_tabs" ]; then
@@ -2757,7 +2847,14 @@ fm_backend_herdr_resolve_bare_selector() {  # <name>
     [ -n "$session" ] || continue
     tabs=$(fm_backend_herdr_cli "$session" tab list 2>/dev/null) || continue
     tab_id=$(printf '%s' "$tabs" | jq -r --arg want "$name" \
-      '.result.tabs[]? | select(.label == $want) | .tab_id' 2>/dev/null | head -1)
+      '.result.tabs[]?
+       | .label as $label
+       | select(
+           $label == $want
+           or (($label | startswith($want + " · w:"))
+             and ($label | test(" · w:[A-Za-z0-9_-]{22}$")))
+         )
+       | .tab_id' 2>/dev/null | head -1)
     [ -n "$tab_id" ] || continue
     wsid=$(printf '%s' "$tabs" | jq -r --arg tab "$tab_id" '.result.tabs[]? | select(.tab_id == $tab) | .workspace_id' 2>/dev/null | head -1)
     [ -n "$wsid" ] || continue
@@ -2794,7 +2891,11 @@ fm_backend_herdr_list_live() {  # <session>
     pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || continue
     [ -n "$pane_id" ] || continue
     printf '%s:%s\t%s\n' "$session" "$pane_id" "$label"
-  done < <(printf '%s' "$tabs" | jq -r '.result.tabs[]? | select(.label | startswith("fm-")) | "\(.tab_id)\t\(.label)"' 2>/dev/null)
+  done < <(printf '%s' "$tabs" | jq -r '
+    .result.tabs[]?
+    | select(.label | startswith("fm-"))
+    | "\(.tab_id)\t\(.label | sub(" · w:[A-Za-z0-9_-]{22}$"; ""))"
+  ' 2>/dev/null)
 }
 
 # --- native event push: pane.agent_status_changed subscriber -----------------
