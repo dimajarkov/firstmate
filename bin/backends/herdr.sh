@@ -102,6 +102,8 @@ FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
 FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 FM_BACKEND_HERDR_WORKSPACE_BINDING=".herdr-workspace"
 FM_BACKEND_HERDR_WORKSPACE_RECOVERY=".herdr-workspace-recovery"
+FM_BACKEND_HERDR_SESSION_TOKEN=".firstmate-session-incarnation-v1"
+FM_BACKEND_HERDR_SESSION_ANCHOR=".firstmate-session-incarnation-v1.anchor"
 FM_BACKEND_HERDR_PROJECTION_PARENT_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)$'
 FM_BACKEND_HERDR_PROJECTION_LEGACY_CHILD_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)/.+ · p:[A-Za-z0-9_-]{22}$'
 # The default-off presentation projection is intentionally separate from the
@@ -189,29 +191,7 @@ fm_backend_herdr_workspace_session_key() {
   printf '%s' "$key"
 }
 
-fm_backend_herdr_session_dir_incarnation() {  # <session-dir>
-  local dir=$1 canonical identity fingerprint
-  [ -d "$dir" ] || return 1
-  canonical=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    identity=$(stat -f '%d:%i:%B' "$canonical" 2>/dev/null) || return 1
-  else
-    identity=$(stat -c '%d:%i:%W' "$canonical" 2>/dev/null) || return 1
-  fi
-  case "$identity" in *:0|'') return 1 ;; esac
-  if command -v shasum >/dev/null 2>&1; then
-    fingerprint=$(printf '%s\0%s' "$canonical" "$identity" | shasum -a 256 2>/dev/null | awk '{print $1}')
-  elif command -v sha256sum >/dev/null 2>&1; then
-    fingerprint=$(printf '%s\0%s' "$canonical" "$identity" | sha256sum 2>/dev/null | awk '{print $1}')
-  else
-    return 1
-  fi
-  [ "${#fingerprint}" -eq 64 ] || return 1
-  case "$fingerprint" in *[!0-9a-f]*) return 1 ;; esac
-  printf '%s' "$fingerprint"
-}
-
-fm_backend_herdr_session_incarnation() {  # <session>
+fm_backend_herdr_session_dir() {  # <session>
   local session=$1 sessions session_dir socket socket_dir
   sessions=$(HERDR_SESSION="$session" herdr session list --json 2>/dev/null) || return 1
   session_dir=$(printf '%s' "$sessions" | jq -er --arg want "$session" '
@@ -233,7 +213,70 @@ fm_backend_herdr_session_incarnation() {  # <session>
     [ -n "$socket_dir" ] && [ "$socket_dir" != "$socket" ] || return 1
     session_dir=$socket_dir
   fi
-  fm_backend_herdr_session_dir_incarnation "$session_dir"
+  [ -d "$session_dir" ] || return 1
+  cd "$session_dir" 2>/dev/null && pwd -P
+}
+
+fm_backend_herdr_session_incarnation() {  # <session>
+  local session=$1 dir session_file token_file anchor_file token
+  dir=$(fm_backend_herdr_session_dir "$session") || return 1
+  session_file="$dir/session.json"
+  token_file="$dir/$FM_BACKEND_HERDR_SESSION_TOKEN"
+  anchor_file="$dir/$FM_BACKEND_HERDR_SESSION_ANCHOR"
+  [ -f "$session_file" ] || return 1
+  [ -f "$token_file" ] && [ ! -L "$token_file" ] || return 1
+  [ -f "$anchor_file" ] && [ ! -L "$anchor_file" ] || return 1
+  [ "$session_file" -ef "$anchor_file" ] || return 1
+  token=$(cat "$token_file" 2>/dev/null) || return 1
+  [ "${#token}" -eq 64 ] || return 1
+  case "$token" in *[!0-9a-f]*) return 1 ;; esac
+  printf '%s' "$token"
+}
+
+fm_backend_herdr_session_incarnation_prepare() {  # <session>
+  local session=$1 incarnation dir session_file token_file anchor_file token_tmp anchor_tmp token path
+  if incarnation=$(fm_backend_herdr_session_incarnation "$session"); then
+    printf '%s' "$incarnation"
+    return 0
+  fi
+  dir=$(fm_backend_herdr_session_dir "$session") || return 1
+  session_file="$dir/session.json"
+  token_file="$dir/$FM_BACKEND_HERDR_SESSION_TOKEN"
+  anchor_file="$dir/$FM_BACKEND_HERDR_SESSION_ANCHOR"
+  [ -f "$session_file" ] || return 1
+  for path in "$token_file" "$anchor_file"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      { [ -f "$path" ] || [ -L "$path" ]; } && [ ! -d "$path" ] || return 1
+    fi
+  done
+  token=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null \
+    | od -An -tx1 \
+    | tr -d ' \r\n') || return 1
+  [ "${#token}" -eq 64 ] || return 1
+  case "$token" in *[!0-9a-f]*) return 1 ;; esac
+  token_tmp=$(mktemp "$dir/.firstmate-session-token.XXXXXX") || return 1
+  anchor_tmp=$(mktemp "$dir/.firstmate-session-anchor.XXXXXX") \
+    || { rm -f "$token_tmp"; return 1; }
+  chmod 0600 "$token_tmp" \
+    || { rm -f "$token_tmp" "$anchor_tmp"; return 1; }
+  if ! printf '%s\n' "$token" > "$token_tmp"; then
+    rm -f "$token_tmp" "$anchor_tmp"
+    return 1
+  fi
+  rm -f "$anchor_tmp"
+  if ! ln -L "$session_file" "$anchor_tmp"; then
+    rm -f "$token_tmp" "$anchor_tmp"
+    return 1
+  fi
+  if ! mv -f "$token_tmp" "$token_file"; then
+    rm -f "$token_tmp" "$anchor_tmp"
+    return 1
+  fi
+  if ! mv -f "$anchor_tmp" "$anchor_file"; then
+    rm -f "$anchor_tmp"
+    return 1
+  fi
+  fm_backend_herdr_session_incarnation "$session"
 }
 
 fm_backend_herdr_workspace_state_dir() {
@@ -306,7 +349,7 @@ fm_backend_herdr_workspace_record_bound_id() {
   bound_incarnation=$(fm_backend_herdr_workspace_binding_field "$record" session_incarnation) || return 1
   workspace=$(fm_backend_herdr_workspace_binding_field "$record" workspace_id) || return 1
   current_incarnation=$(fm_backend_herdr_session_incarnation "$session") || return 1
-  [ "$version" = 2 ] \
+  [ "$version" = 3 ] \
     && [ "$home_id" = "$expected_id" ] \
     && [ "$bound_session" = "$session" ] \
     && [ "$bound_incarnation" = "$current_incarnation" ] || return 1
@@ -345,7 +388,7 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   case "$session" in ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   case "$seeded_tab" in *[[:space:]]*) return 1 ;; esac
-  incarnation=$(fm_backend_herdr_session_incarnation "$session") || return 1
+  incarnation=$(fm_backend_herdr_session_incarnation_prepare "$session") || return 1
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
   case "$record_name" in
     "$FM_BACKEND_HERDR_WORKSPACE_BINDING") [ -z "$seeded_tab" ] || return 1 ;;
@@ -363,7 +406,7 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   tmp=$(mktemp "$state/.herdr-workspace.record.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   if ! {
-    printf 'version=2\n'
+    printf 'version=3\n'
     printf 'home_id=%s\n' "$id"
     printf 'session=%s\n' "$session"
     printf 'session_incarnation=%s\n' "$incarnation"
@@ -1168,7 +1211,7 @@ fm_backend_herdr_server_ensure() {  # <session>
 # compatibility with live homes during this transition. Current display labels
 # are never operational selectors because two durable ids can share one.
 fm_backend_herdr_workspace_find() {  # <session>
-  local session=$1 id status label legacy bound list matches
+  local session=$1 id status label legacy bound list matches binding recovery has_record
   label=$(fm_backend_herdr_workspace_label) || return 1
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 0
   # NOTE: the jq variable is $want, NOT $label - `label` is a jq reserved
@@ -1186,6 +1229,15 @@ fm_backend_herdr_workspace_find() {  # <session>
     [ -z "$matches" ] || printf '%s\n' "$matches" | head -1
     return 0
   fi
+  binding=$(fm_backend_herdr_workspace_record_path \
+    "$FM_BACKEND_HERDR_WORKSPACE_BINDING" "$session") || return 1
+  recovery=$(fm_backend_herdr_workspace_record_path \
+    "$FM_BACKEND_HERDR_WORKSPACE_RECOVERY" "$session") || return 1
+  has_record=0
+  if [ -e "$binding" ] || [ -L "$binding" ] \
+     || [ -e "$recovery" ] || [ -L "$recovery" ]; then
+    has_record=1
+  fi
   bound=$(fm_backend_herdr_workspace_bound_id "$session" 2>/dev/null || true)
   if [ -n "$bound" ]; then
     matches=$(printf '%s' "$list" | jq -r --arg workspace "$bound" \
@@ -1193,6 +1245,7 @@ fm_backend_herdr_workspace_find() {  # <session>
     [ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')" = 1 ] \
       && { printf '%s\n' "$matches"; return 0; }
   fi
+  [ "$has_record" -eq 0 ] || return 0
   legacy=$(fm_backend_herdr_workspace_legacy_label 2>/dev/null || true)
   [ -n "$legacy" ] || return 0
   matches=$(printf '%s' "$list" | jq -r --arg want "$legacy" \
