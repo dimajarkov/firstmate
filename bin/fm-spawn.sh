@@ -948,13 +948,19 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
-        spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS" || exit 1
+        HERDR_RECOVERY_PARENT_READY=0
+        if spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS"; then
+          HERDR_RECOVERY_PARENT_READY=1
+        else
+          echo "warning: herdr presentation recovery has no current exact parent; in-place reclaim is disabled" >&2
+        fi
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
         fm_backend_herdr_projection_recovery_allows_flat \
           "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
-        if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
+        if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ] \
+           && [ "$HERDR_RECOVERY_PARENT_READY" -eq 1 ]; then
           set +e
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \

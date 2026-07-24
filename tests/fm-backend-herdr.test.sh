@@ -2092,6 +2092,33 @@ test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
   pass "fm-spawn: exact parent resolution occurs only after server ensure and under the presentation lock"
 }
 
+test_spawn_parent_resolution_failure_preserves_flat_recovery() {
+  local recovery resolve_line inspect_line reclaim_gate_line
+  recovery=$(sed -n \
+    '/if \[ -e "\$HERDR_PRESENTATION_JOURNAL"/,/elif \[ ! -e "\$STATE\/\$ID.meta"/p' \
+    "$ROOT/bin/fm-spawn.sh")
+  assert_contains "$recovery" 'HERDR_RECOVERY_PARENT_READY=0' \
+    "recovery did not default exact-parent eligibility to false"
+  assert_contains "$recovery" \
+    'if spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS"; then' \
+    "recovery did not treat exact-parent resolution as optional reclaim eligibility"
+  assert_not_contains "$recovery" \
+    'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS" || exit 1' \
+    "exact-parent resolution failure still exits before flat-fallback inspection"
+  assert_contains "$recovery" '&& [ "$HERDR_RECOVERY_PARENT_READY" -eq 1 ]; then' \
+    "reclaim is not gated on successful current exact-parent resolution"
+  resolve_line=$(printf '%s\n' "$recovery" | grep -nF \
+    'if spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS"; then' | cut -d: -f1)
+  inspect_line=$(printf '%s\n' "$recovery" | grep -n \
+    'fm_backend_herdr_projection_recovery_allows_flat' | cut -d: -f1)
+  reclaim_gate_line=$(printf '%s\n' "$recovery" | grep -nF \
+    '&& [ "$HERDR_RECOVERY_PARENT_READY" -eq 1 ]; then' | cut -d: -f1)
+  [ -n "$resolve_line" ] && [ -n "$inspect_line" ] && [ -n "$reclaim_gate_line" ] \
+    && [ "$resolve_line" -lt "$inspect_line" ] && [ "$inspect_line" -lt "$reclaim_gate_line" ] \
+    || fail "flat-fallback safety inspection is not preserved between parent resolution and reclaim"
+  pass "fm-spawn: missing exact parents disable reclaim without bypassing flat-fallback safety inspection"
+}
+
 test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
   local dir log resp fb home resolver out status
   dir="$TMP_ROOT/spawn-primary-parent"; mkdir -p "$dir/responses"
@@ -3648,6 +3675,7 @@ test_workspace_identity_state_symlinks_are_bounded_to_home
 test_secondmate_task_labels_remain_exact_with_home_identity
 test_primary_workspace_ambiguity_fails_closed
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
+test_spawn_parent_resolution_failure_preserves_flat_recovery
 test_spawn_primary_parent_resolution_requires_one_exact_workspace
 test_spawn_secondmate_parent_resolution_propagates_exact_identity_failures
 test_list_live_scoped_to_this_homes_workspace_only

@@ -92,7 +92,7 @@ Old generations remain read-only, and replacement creation requires proof that e
 Secondmate task tabs retain their exact logical `fm-<id>` labels.
 Workspace labels, task metadata, cwd, tab labels, pane environments, and projected workspaces never establish parent ownership.
 Identity preparation, discovery, creation, and publication are serialized per home and named session.
-During transition, a valid version 4 or 5 home record can migrate once by exact workspace id while its old session marker proves the same incarnation; no legacy label is adopted on its own.
+During transition, exact-record migration and the single canonical-label compatibility exception follow the one-time immediate exact-ID binding contract in [`docs/herdr-backend.md`](herdr-backend.md#no-forced-migration); every other label-only adoption remains forbidden.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [`docs/herdr-backend.md`](herdr-backend.md#optional-disposable-single-task-presentation-spaces) owns its behavior, safety limits, and recovery contract.
 The flag is default-off and inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
