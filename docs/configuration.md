@@ -85,9 +85,9 @@ These five sentences are the single owner of the task-selector vocabulary; backe
 `fm-teardown.sh <id>` takes a task id directly and uses the same recorded backend target fields after loading `state/<id>.meta`.
 By default, Herdr workspace labels are derived from `FM_HOME`: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses the standard display label `2🏴‍☠️-<id>` with only a terminal `-secondmate` omitted.
 This is a shared convention, not a per-home preference or configuration setting.
-The durable marker id remains the routing and endpoint identity, while the label is presentation.
-The default-container spawn, list-live, and recovery paths read that label from the active home, so a secondmate's own crewmates stay inside that secondmate home's herdr space.
-During transition, a single live legacy `2ndmate-<id>` workspace is reused without renaming, so its recorded task endpoints continue to work.
+The durable marker id remains the routing identity, exact recorded targets remain endpoint authority, and the label is presentation.
+Each secondmate home records its exact current workspace id in `state/.herdr-workspace`, so suffix-colliding ids such as `foo` and `foo-secondmate` remain isolated even though both display as `2🏴‍☠️-foo`.
+During transition, a single live legacy `2ndmate-<id>` workspace is reused without renaming and receives that home-scoped exact binding, so its recorded task endpoints continue to work.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [`docs/herdr-backend.md`](herdr-backend.md#optional-disposable-single-task-presentation-spaces) owns its behavior, safety limits, and recovery contract.
 The flag is default-off and inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.

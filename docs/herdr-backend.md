@@ -123,18 +123,19 @@ Both `fm_backend_herdr_workspace_ensure`'s workspace create and `fm_backend_herd
 This is defense in depth rather than a behavior change in the already-safe steady state: it guards workspace and tab creation after the session already has a focused workspace, but it cannot prevent herdr's unavoidable first-workspace focus in a brand-new empty session.
 Once a workspace exists, spawning - primary or secondmate, workspace or tab - should not switch whatever space the captain is actively watching.
 
-### Label collisions: adopt-don't-duplicate, unchanged in spirit
+### Label collisions: display is not operational identity
 
 Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-verified for workspaces specifically in this pass: creating a second workspace with an already-used label succeeds and produces two workspaces sharing that label).
-`fm_backend_herdr_workspace_find` therefore adopts the FIRST matching workspace `jq` returns for a home's own label - in practice list order, normally creation order / the oldest - rather than attempting to disambiguate; this mirrors the pre-existing tab duplicate-label check in `fm_backend_herdr_create_task` (which still refuses an exact duplicate TAB label within the adopted workspace).
-Practical consequence: if a user manually creates their own herdr workspace that happens to share a firstmate home's current label (`firstmate` or `2🏴‍☠️-<id>`), firstmate's next spawn silently adopts that pre-existing workspace as if it were its own, rather than creating a second one or refusing.
-This is a pre-existing characteristic of the adapter's find-before-create pattern, not a new risk introduced by the per-home refinement; avoid naming a personal herdr workspace `firstmate` or a firstmate-derived secondmate label if you want to keep it separate from firstmate's own space.
+Secondmate homes therefore persist their exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding instead of selecting by the suffix-stripped display label.
+Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
+The primary home's established `firstmate` label lookup remains unchanged.
 
 ### No forced migration
 
 Existing live tasks are unaffected by this change: a task's meta already records its own `window=`/`herdr_pane_id=` target, which every backend-scoped operation (send/capture/kill/busy-state) resolves directly and never re-derives from a workspace label.
-A new lookup prefers the current derived display label and otherwise reuses exactly one legacy `2ndmate-<id>` workspace without renaming it.
+A new lookup prefers a valid exact home-scoped binding and otherwise reuses exactly one legacy `2ndmate-<id>` workspace without renaming it.
 Ambiguous duplicate legacy labels are left untouched rather than guessed at.
+Adopting or creating a workspace publishes the exact binding for subsequent operations.
 New workspaces always use the current convention, and no destructive cleanup or manual migration is required for an already-running legacy workspace.
 
 Tab-per-task within each home's own workspace remains the durable default for the reason P2 originally found: attaching once shows every one of that home's tasks as a tab in one tab bar, switchable with `ctrl+b <n>`, matching how a captain already watches a tmux-backed fleet.
@@ -143,7 +144,8 @@ The optional projection accepts a top-level space per clean new task as a dispos
 
 ## Default workspace lifecycle: one per-home workspace, reused
 
-Each home's own workspace (`firstmate` for the primary and its derived `2🏴‍☠️-<id>` label for a secondmate - see "Label derivation" above) is created as needed and reused by each subsequent default-container spawn while it exists: `fm_backend_herdr_workspace_ensure` calls `fm_backend_herdr_workspace_find` first and creates a workspace only when none labelled for that home exists yet.
+Each home's own workspace (`firstmate` for the primary and its derived `2🏴‍☠️-<id>` label for a secondmate - see "Label derivation" above) is created as needed and reused by each subsequent default-container spawn while it exists.
+`fm_backend_herdr_workspace_ensure` calls `fm_backend_herdr_workspace_find` first and creates a secondmate workspace only when neither its exact binding nor one unambiguous legacy label resolves.
 Teardown (`fm_backend_herdr_kill`) closes only the task's pane/tab, never the workspace.
 
 ## Optional disposable single-task presentation spaces
@@ -282,7 +284,7 @@ Use a distinct name such as `$want` instead; `tests/fm-backend-herdr.test.sh` gr
 
 **The prune target is identified structurally (created-vs-adopted), never by label pattern.**
 `fm_backend_herdr_workspace_ensure` captures the seeded default tab's `tab_id` straight from its OWN `workspace create` response (`.result.tab.tab_id`, verified empirically to be present on the same response as `.result.workspace.workspace_id` - no follow-up `tab list` call is needed) ONLY when that call itself just created the workspace.
-`fm_backend_herdr_container_ensure` threads that id through to its caller as a second field: it echoes `"<session>:<workspace_id>\t<seeded_default_tab_id>"`, the second field empty whenever the workspace was ADOPTED (`fm_backend_herdr_workspace_find` matched a pre-existing workspace by label) rather than created fresh.
+`fm_backend_herdr_container_ensure` threads that id through to its caller as a second field: it echoes `"<session>:<workspace_id>\t<seeded_default_tab_id>"`, the second field empty whenever the workspace was adopted through the primary label, an exact secondmate binding, or one unambiguous legacy label rather than created fresh.
 `fm_backend_herdr_create_task` accepts that value as an explicit 4th argument and is the ONLY place allowed to act on it; it never re-derives "prunable" from a tab's label or the workspace's tab count.
 An adopted workspace's caller always passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an adopted workspace's tabs to be pruned, regardless of how they are labeled.
 
@@ -301,7 +303,7 @@ The fix is structural, not another heuristic, and is unit- and E2E-tested: see `
 
 Because closing a workspace's last tab deletes it, a home's workspace does not outlive a fully idle fleet (zero live tasks for that home) - the next spawn's `workspace_find` simply finds nothing and recreates it. Reuse holds across concurrent and sequential tasks; it is not a guarantee that the workspace itself survives the whole session unconditionally.
 
-A workspace whose label this adapter did not derive (see "Label derivation" above) is never adopted, reused, or torn down by firstmate - `fm_backend_herdr_workspace_find` and `fm_backend_herdr_list_live` only ever match a home's own derived label.
+A workspace outside the primary label, a secondmate home's exact binding, or one unambiguous legacy secondmate label is never adopted, reused, or torn down by firstmate.
 
 ## Target string and meta fields
 
