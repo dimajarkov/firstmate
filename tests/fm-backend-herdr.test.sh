@@ -1699,11 +1699,18 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
   [ "$status" -ne 0 ] || fail "failed exact rollback should still fail workspace ensure"
   [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace-recovery")" = w9 ] \
     || fail "failed exact rollback did not retain the response-created workspace id"
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$home/state/.herdr-workspace-recovery")" = w9:t1 ] \
+    || fail "failed exact rollback did not retain the response-created seeded tab id"
   rm -f "$resp/.count"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/2.out"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
-  [ "$out" = w9 ] || fail "retry did not recover the unremoved exact workspace, got '$out'"
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_workspace_ensure fmtest /tmp >/dev/null || exit 1
+      printf "%s\t%s" "$FM_BACKEND_HERDR_WS_ID" "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
+    ' "$ROOT")
+  [ "$out" = $'w9\tw9:t1' ] || fail "retry did not recover the exact workspace and seeded tab, got '$out'"
   [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
     || fail "retry did not promote the recovery record to the authoritative binding"
   [ ! -e "$home/state/.herdr-workspace-recovery" ] \
@@ -1711,6 +1718,47 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
   [ "$(grep -c $'\x1f''workspace'$'\x1f''create' "$log")" -eq 1 ] \
     || fail "retry created another workspace instead of adopting the retained exact id"
   pass "fm_backend_herdr_workspace_ensure: failed exact rollback retains a retry-safe workspace binding"
+}
+
+test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed() {
+  local dir log resp fb out status home
+  dir="$TMP_ROOT/binding-rollback-malformed-list"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-rollback-malformed-list-home"; mkdir -p "$home/state"; printf 'rollback-malformed-secondmate\n' > "$home/.fm-secondmate-home"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2🏴‍☠️-rollback-malformed"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/2.out"
+  printf '{}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "late binding publication failure should fail workspace ensure"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace-recovery")" = w9 ] \
+    || fail "schema-invalid rollback verification discarded the exact workspace recovery id"
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$home/state/.herdr-workspace-recovery")" = w9:t1 ] \
+    || fail "schema-invalid rollback verification discarded the exact seeded tab recovery id"
+  pass "fm_backend_herdr_workspace_ensure: malformed rollback lists retain exact recovery authority"
+}
+
+test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable() {
+  local dir log resp fb out status home recovery
+  dir="$TMP_ROOT/binding-recovery-unreadable-seed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-recovery-unreadable-seed-home"; mkdir -p "$home/state"; printf 'recovery-unreadable-secondmate\n' > "$home/.fm-secondmate-home"
+  recovery="$home/state/.herdr-workspace-recovery"
+  printf 'version=1\nhome_id=recovery-unreadable-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-recovery-unreadable"}]}}\n' > "$resp/1.out"
+  printf '{}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "unreadable seeded-tab revalidation should fail workspace ensure"
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
+    || fail "unreadable seeded-tab revalidation discarded recovery authority"
+  [ ! -e "$home/state/.herdr-workspace" ] \
+    || fail "unreadable seeded-tab revalidation published an authoritative binding"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' \
+    "unreadable seeded-tab revalidation created another workspace"
+  pass "fm_backend_herdr_workspace_ensure: unreadable seeded-tab recovery remains retryable"
 }
 
 test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
@@ -3207,6 +3255,8 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming
 test_workspace_binding_accepts_only_in_home_state_symlinks
 test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure
 test_workspace_ensure_retains_recovery_when_exact_rollback_fails
+test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed
+test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
