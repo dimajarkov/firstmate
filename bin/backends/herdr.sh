@@ -102,6 +102,8 @@ FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
 FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 FM_BACKEND_HERDR_WORKSPACE_BINDING=".herdr-workspace"
 FM_BACKEND_HERDR_WORKSPACE_RECOVERY=".herdr-workspace-recovery"
+FM_BACKEND_HERDR_PROJECTION_PARENT_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)$'
+FM_BACKEND_HERDR_PROJECTION_LEGACY_CHILD_LABEL_RE='^(firstmate|2ndmate-[^/]+|2🏴‍☠️-[^/]*)/.+ · p:[A-Za-z0-9_-]{22}$'
 # The default-off presentation projection is intentionally separate from the
 # authoritative task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
@@ -872,20 +874,23 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
     echo "warning: herdr presentation ordering could not list workspaces; leaving worker in Herdr's current order" >&2
     return 0
   }
-  analysis=$(printf '%s' "$list" | jq -c --arg created "$created" --arg parent "$parent" --arg parent_workspace "$parent_workspace" '
+  analysis=$(printf '%s' "$list" | jq -c --arg created "$created" --arg parent "$parent" \
+    --arg parent_workspace "$parent_workspace" \
+    --arg parent_label_re "$FM_BACKEND_HERDR_PROJECTION_PARENT_LABEL_RE" \
+    --arg legacy_child_label_re "$FM_BACKEND_HERDR_PROJECTION_LEGACY_CHILD_LABEL_RE" '
     def is_parent:
       (.label | type) == "string"
       and .label == $parent
       and (($parent_workspace == "") or .workspace_id == $parent_workspace);
     def is_top_level_parent:
       (.label | type) == "string"
-      and ((.label == "firstmate") or (.label | test("^(2ndmate-|2🏴‍☠️-)[^/]+$")));
+      and (.label | test($parent_label_re));
     def is_new_child:
       (.label | type) == "string"
       and (.label | test("^└ .+ · p:[A-Za-z0-9_-]{22}$"));
     def is_legacy_child:
       (.label | type) == "string"
-      and (.label | test("^(firstmate|(2ndmate-|2🏴‍☠️-)[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"));
+      and (.label | test($legacy_child_label_re));
     def is_legacy_child_for($owner):
       is_legacy_child and (.label | startswith($owner + "/"));
     def is_child_for($owner):
@@ -1639,13 +1644,14 @@ fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <works
     --arg workspace "$workspace" \
     --arg parent_workspace "$parent_workspace" \
     --arg parent_label "$parent_label" \
-    --arg workspace_label "$workspace_label" '
+    --arg workspace_label "$workspace_label" \
+    --arg legacy_child_label_re "$FM_BACKEND_HERDR_PROJECTION_LEGACY_CHILD_LABEL_RE" '
       def is_new_child:
         (.label | type) == "string"
         and (.label | test("^└ .+ · p:[A-Za-z0-9_-]{22}$"));
       def is_legacy_child_for($owner):
         (.label | type) == "string"
-        and (.label | test("^(firstmate|(2ndmate-|2🏴‍☠️-)[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"))
+        and (.label | test($legacy_child_label_re))
         and (.label | startswith($owner + "/"));
       (.result.workspaces // null) as $spaces
       | select(($spaces | type) == "array")
