@@ -338,9 +338,14 @@ spawn_herdr_presentation_order_lock_release() {
 }
 
 spawn_herdr_parent_resolve() {
-  local session=$1 home=$2
+  local session=$1 home=$2 cwd=${3:-$PWD}
   HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
-  HERDR_PARENT_WORKSPACE_ID=
+  # Ensure or migrate the parent identity before a presentation child consults
+  # it. This is the only label-based legacy migration path, and the adapter
+  # binds the exact response id before it can order a child beneath it.
+  HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
+    fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null || true)
+  [ -n "$HERDR_PARENT_WORKSPACE_ID" ] || return 0
   HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" \
     fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
   if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
@@ -934,7 +939,7 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
-        spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" || exit 1
+        spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS" || exit 1
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
@@ -974,7 +979,7 @@ case "$BACKEND" in
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
           echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
-          spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" || true
+          spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS" || true
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
             echo "warning: herdr presentation parent is absent or ambiguous; using the ordinary flat layout without projection" >&2
             spawn_herdr_presentation_order_lock_release
