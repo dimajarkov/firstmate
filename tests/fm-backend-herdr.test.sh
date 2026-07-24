@@ -2080,6 +2080,7 @@ test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/1.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"}]}}\n' > "$resp/2.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/3.out"
+  cp "$resp/3.out" "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
