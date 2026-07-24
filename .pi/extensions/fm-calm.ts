@@ -1,18 +1,20 @@
 // Firstmate's home-persistent Pi transcript presentation toggle.
 //
-// Compatibility boundary: Pi 0.81.1 exposes built-in ToolDefinitions, per-slot
+// Compatibility boundary: Pi 0.81.1 and 0.82.0 expose built-in ToolDefinitions, per-slot
 // renderers, renderShell: "self", session_start replacement reasons,
 // ExtensionUIContext.setToolsExpanded(), setWorkingVisible(), and
 // setHiddenThinkingLabel(). The focused tests pin those assumptions. Exact-version
 // presentation adapters cover collapsed assistant thinking and operational user rows;
 // Pi still exposes no global renderer for arbitrary built-in or custom rows.
-// docs/configuration.md owns the home-local Calm preference contract.
+// docs/configuration.md owns the Calm preference schema and user behavior;
+// secondmate-provisioning owns inherited propagation mechanics.
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -84,6 +86,13 @@ export default function (pi: ExtensionAPI) {
   const fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
   const configDirectory = process.env.FM_CONFIG_OVERRIDE || resolve(fmHome, "config");
   const calmPreferencePath = resolve(configDirectory, "calm");
+  const secondmateHome = (() => {
+    try {
+      return statSync(resolve(fmHome, ".fm-secondmate-home")).isFile();
+    } catch {
+      return false;
+    }
+  })();
   const loadCalmPreference = (): boolean => {
     try {
       return readFileSync(calmPreferencePath, "utf8").trim() === "on";
@@ -261,6 +270,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("calm", {
     description: "Toggle Firstmate's supported conversation-only transcript presentation.",
     handler: async (_args, ctx) => {
+      if (secondmateHome) {
+        ctx.ui.notify(
+          "Calm is managed by the primary Firstmate in secondmate homes.",
+          "warning",
+        );
+        return;
+      }
       const active = !calmPresentationIsActive();
       persistCalmPreference(active);
       setCalmPresentation(active);

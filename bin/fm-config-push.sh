@@ -3,17 +3,18 @@
 # Usage: fm-config-push.sh [--help]
 #
 # Mid-session convergence for inherited local material such as
-# config/crew-dispatch.json edits or data/captain-shared.md updates. This
+# config/crew-dispatch.json edits, config/calm presentation preference changes, or data/captain-shared.md updates. This
 # discovers live secondmate homes from state/*.meta, backfills
 # home= from data/secondmates.md for older meta records, and reuses the same
 # propagation machinery as bootstrap, but deliberately does not
 # fast-forward tracked files.
-# After a successful per-home propagation that changes any allowlisted config/*
+# After a successful per-home propagation that changes an ordinary config/*
 # item, writes a generation-specific literal-content reread instruction and
 # sends its pointer to that live secondmate via fm-config-inherit-lib.sh
-# (fm_config_send_reread_nudge).
-# Unchanged config and data/captain-shared.md-only updates send no reread
-# message unless a previous send failure is pending for that home.
+# (fm_config_send_reread_nudge). A Calm update joins that generation only for a
+# live Pi secondmate and states the next-session presentation boundary.
+# Changes not applicable to the live harness and data/captain-shared.md-only
+# updates send no reread message unless a previous deliverable failure is pending.
 # Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
 set -u
 
@@ -26,8 +27,9 @@ live secondmate home.
 
 This is local-material-only:
   - does not fast-forward tracked files
-  - after successful config/* changes, writes a generation-specific
+  - after successful ordinary config/* changes, writes a generation-specific
     literal-content reread instruction and sends its pointer to that live secondmate
+  - includes Calm only for a live Pi secondmate and states that it applies next session
     (no message when config is unchanged unless a previous send failure is pending)
   - reports each live home and each inheritable item as pushed, unchanged,
     skipped, or error
@@ -121,6 +123,7 @@ while IFS='|' read -r id home _window meta; do
     continue
   fi
   home_real="$VALIDATED_HOME"
+  harness=$(grep '^harness=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
   case " $seen_homes " in
     *" $home_real "*)
       printf 'secondmate %s (%s): skipped - already processed for another live meta\n' "$id" "$home_real"
@@ -151,7 +154,7 @@ while IFS='|' read -r id home _window meta; do
     continue
   }
   if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
-    fm_config_reread_retry_pending "$id" "$home_real" || true
+    fm_config_reread_retry_pending "$id" "$home_real" "$harness" || true
     if fm_config_reread_retry_queue_is_full "$FM_HOME" "$id"; then
       echo "  config-reread: error - retry instruction queue is full"
       errors=1
@@ -174,13 +177,13 @@ while IFS='|' read -r id home _window meta; do
   fi
   print_item_report "$report"
   reread_pending=0
-  if fm_config_reread_has_pending "$home_real" || fm_config_reread_has_staged "$FM_HOME" "$id"; then
+  if fm_config_reread_has_deliverable_pending "$home_real" "$FM_HOME" "$id" "$harness"; then
     reread_pending=1
   fi
   if reread_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
     FM_STATE_OVERRIDE="$STATE" \
-    fm_config_send_reread_nudge "$id" "$home_real" "$report" 2>&1); then
-    if [ -n "$(fm_config_reread_changed_items "$report")" ] || [ "$reread_pending" -eq 1 ]; then
+    fm_config_send_reread_nudge "$id" "$home_real" "$report" "$harness" 2>&1); then
+    if [ -n "$(fm_config_reread_changed_items "$report" "$harness")" ] || [ "$reread_pending" -eq 1 ]; then
       printf '  config-reread: sent\n'
     fi
     [ -z "$reread_out" ] || printf '%s\n' "$reread_out"

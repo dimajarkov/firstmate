@@ -2,6 +2,8 @@
 # Focused rendering, lifecycle, persistence, and interactive TUI checks for /calm.
 set -u
 
+export NODE_NO_WARNINGS=1
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -16,6 +18,14 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
+
+require_supported_pi_calm_version() {
+  local version=$1
+  case "$version" in
+    0.81.1|0.82.0) ;;
+    *) fail "Pi Calm compatibility assumptions require Pi 0.81.1 or 0.82.0, found $version" ;;
+  esac
+}
 
 cleanup() {
   if command -v tmux >/dev/null 2>&1; then
@@ -126,14 +136,16 @@ test_home_resolution() {
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
-  [ "$version" = "0.81.1" ] || fail "Pi calm compatibility assumptions require Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   fixture="$TMP_ROOT/home-resolution"
   mkdir -p \
     "$fixture/project/.pi/extensions/lib" \
     "$fixture/project/node_modules/@earendil-works" \
     "$fixture/override" \
+    "$fixture/secondmate" \
     "$fixture/launch-cwd"
+  printf '%s\n' secondmate > "$fixture/secondmate/.fm-secondmate-home"
   cp "$EXT" "$fixture/project/.pi/extensions/fm-calm.ts"
   cp "$ASSISTANT_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-assistant-layout.ts"
   cp "$OPERATIONAL_USER_LAYOUT" "$fixture/project/.pi/extensions/lib/fm-calm-operational-user-layout.ts"
@@ -178,6 +190,7 @@ function registerCalm() {
   return { calmCommand, sessionStart: handlers.get("session_start") };
 }
 
+const notifications = [];
 const context = {
   ui: {
     getEditorText() {
@@ -188,6 +201,9 @@ const context = {
     },
     onTerminalInput() {
       return () => {};
+    },
+    notify(message, level) {
+      notifications.push({ message, level });
     },
     setHiddenThinkingLabel() {},
     setStatus() {},
@@ -216,12 +232,27 @@ if (readFileSync(`${process.env.EXTENSION_HOME}/config/calm`, "utf8") !== "on\n"
 if (existsSync(`${process.cwd()}/config/calm`)) {
   throw new Error("Calm wrote its preference under Pi's launch directory");
 }
+
+process.env.FM_HOME = `${process.env.EXTENSION_HOME}/../secondmate`;
+calm = registerCalm();
+calm.sessionStart({ reason: "startup" }, context);
+await calm.calmCommand.handler("", context);
+if (existsSync(`${process.env.FM_HOME}/config/calm`)) {
+  throw new Error("/calm persisted a local preference in a secondmate home");
+}
+if (
+  notifications.at(-1)?.message !==
+    "Calm is managed by the primary Firstmate in secondmate homes." ||
+  notifications.at(-1)?.level !== "warning"
+) {
+  throw new Error("/calm did not explain primary ownership in a secondmate home");
+}
 JS
 )
   status=$?
   [ "$status" -eq 0 ] || fail "Pi calm home resolution failed: $out"
   [ -z "$out" ] || fail "Pi calm home-resolution test printed output: $out"
-  pass "Pi calm resolves its persistent home independently of Pi's launch directory"
+  pass "Pi calm resolves its persistent home and refuses local secondmate overrides"
 }
 
 test_rendering_and_session_lifecycle() {
@@ -235,7 +266,7 @@ test_rendering_and_session_lifecycle() {
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
-  [ "$version" = "0.81.1" ] || fail "Pi calm compatibility assumptions require Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   fixture="$TMP_ROOT/renderer"
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
@@ -886,7 +917,7 @@ test_operational_followup_turn_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi operational follow-up E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/followup-project"
   home="$TMP_ROOT/followup-home"
@@ -1239,7 +1270,7 @@ test_hidden_block_geometry_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi Calm hidden-block geometry E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/geometry-project"
   home="$TMP_ROOT/geometry-home"
@@ -1479,7 +1510,7 @@ test_interactive_terminal_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi calm interactive E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/e2e-project"
   config="$TMP_ROOT/e2e-config"

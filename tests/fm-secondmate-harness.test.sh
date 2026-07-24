@@ -14,7 +14,7 @@
 #      explicit per-spawn harness arg still wins.
 #   B) Inheritance. The primary pushes a declared, extensible set of LOCAL
 #      (gitignored) config items - config/crew-dispatch.json, config/crew-harness,
-#      config/backlog-backend, and config/herdr-presentation-spaces - down into
+#      config/backlog-backend, config/herdr-presentation-spaces, and Pi-only config/calm - down into
 #      each secondmate home's config/, so the secondmate's OWN crewmates,
 #      dispatch profiles, backlog backend, and Herdr presentation opt-in inherit
 #      the primary's settings. It is primary-authoritative (re-pushed at
@@ -124,7 +124,7 @@ ROWS
 # B) propagate_inheritable_config unit behavior
 # ===========================================================================
 test_propagate_lib() {
-  local d src dest m1 m2 outside stdout stderr guard_repo err_text
+  local d src dest m1 m2 outside stdout stderr guard_repo err_text linked_parent linked_target
   d="$TMP_ROOT/prop-lib"
   src="$d/src"
   dest="$d/dest"
@@ -135,6 +135,7 @@ test_propagate_lib() {
   printf 'codex\n' > "$src/crew-harness"
   printf 'manual\n' > "$src/backlog-backend"
   : > "$src/herdr-presentation-spaces"
+  printf 'on\n' > "$src/calm"
   stdout="$d/clean-copy.out"
   stderr="$d/clean-copy.err"
   propagate_inheritable_config "$src" "$dest" >"$stdout" 2>"$stderr" || fail "propagate returned non-zero"
@@ -144,6 +145,8 @@ test_propagate_lib() {
   [ "$(cat "$dest/crew-harness")" = codex ] || fail "crew-harness not propagated"
   [ "$(cat "$dest/backlog-backend")" = manual ] || fail "backlog-backend not propagated"
   [ -f "$dest/herdr-presentation-spaces" ] || fail "herdr-presentation-spaces not propagated"
+  [ "$(cat "$dest/calm")" = on ] || fail "calm=on not propagated"
+  [ "$(fm_inherit_file_mode "$dest/calm")" = 444 ] || fail "calm destination is not read-only"
 
   # 2. idempotent: an unchanged re-run does not churn the mtime
   m1=$(date -r "$dest/crew-harness" +%s 2>/dev/null || stat -c %Y "$dest/crew-harness")
@@ -160,10 +163,12 @@ test_propagate_lib() {
   printf '{"default":{"harness":"claude"}}\n' > "$src/crew-dispatch.json"
   printf 'claude\n' > "$src/crew-harness"
   printf 'tasks-axi\n' > "$src/backlog-backend"
+  printf 'off\n' > "$src/calm"
   propagate_inheritable_config "$src" "$dest"
   [ "$(cat "$dest/crew-dispatch.json")" = '{"default":{"harness":"claude"}}' ] || fail "changed dispatch profile did not converge"
   [ "$(cat "$dest/crew-harness")" = claude ] || fail "changed value did not converge"
   [ "$(cat "$dest/backlog-backend")" = tasks-axi ] || fail "changed backlog backend did not converge"
+  [ "$(cat "$dest/calm")" = off ] || fail "calm=off did not converge"
 
   outside="$d/outside-target"
   rm -f "$dest/crew-harness" "$outside"
@@ -176,12 +181,13 @@ test_propagate_lib() {
   [ "$(cat "$outside")" = outside ] || fail "destination symlink target was overwritten"
 
   # 4. removing the source mirrors absence downstream (primary-authoritative)
-  rm -f "$src/crew-dispatch.json" "$src/crew-harness" "$src/backlog-backend" "$src/herdr-presentation-spaces"
+  rm -f "$src/crew-dispatch.json" "$src/crew-harness" "$src/backlog-backend" "$src/herdr-presentation-spaces" "$src/calm"
   propagate_inheritable_config "$src" "$dest"
   [ -e "$dest/crew-dispatch.json" ] && fail "dispatch profile absence not mirrored downstream"
   [ -e "$dest/crew-harness" ] && fail "absence not mirrored downstream"
   [ -e "$dest/backlog-backend" ] && fail "backlog-backend absence not mirrored downstream"
   [ -e "$dest/herdr-presentation-spaces" ] && fail "herdr-presentation-spaces absence not mirrored downstream"
+  [ -e "$dest/calm" ] && fail "calm absence not mirrored downstream"
 
   rm -f "$dest/crew-harness"
   ln -s "$d/missing-target" "$dest/crew-harness"
@@ -235,6 +241,61 @@ test_propagate_lib() {
   assert_contains "$err_text" "fm-config-inherit: warning: skipped crew-dispatch.json" \
     "guard skip did not emit a stderr warning"
   [ ! -e "$guard_repo/config/crew-dispatch.json" ] || fail "guard skip still copied the unignored item"
+
+  # 8. Calm rejects symlinks and hardlinks, quarantines drift, restores
+  # read-only mode, and treats invalid primary content as absence (Pi defaults off).
+  rm -rf "$d/calm-src" "$d/calm-dest"
+  mkdir -p "$d/calm-src" "$d/calm-dest"
+  printf 'on\n' > "$d/calm-src/calm"
+  printf 'off\n' > "$d/calm-dest/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "calm convergence failed"
+  [ "$(cat "$d/calm-dest/calm")" = on ] || fail "calm did not converge to on"
+  [ "$(fm_inherit_file_mode "$d/calm-dest/calm")" = 444 ] || fail "calm did not restore read-only mode"
+  find "$d/calm-dest" -name '.calm.quarantine.*' | grep -q . || fail "calm drift was not quarantined"
+  chmod 0644 "$d/calm-dest/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "calm readonly restoration failed"
+  [ "$(fm_inherit_file_mode "$d/calm-dest/calm")" = 444 ] || fail "unchanged calm did not restore read-only mode"
+  printf 'invalid\n' > "$d/calm-src/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "invalid calm source did not converge"
+  [ ! -e "$d/calm-dest/calm" ] || fail "invalid calm source did not converge to absence"
+  printf 'on\n' > "$d/calm-src/calm"
+  ln -s "$d/outside-target" "$d/calm-src/calm-link"
+  mv "$d/calm-src/calm" "$d/calm-src/calm-real"
+  ln -s "$d/calm-src/calm-real" "$d/calm-src/calm"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm symlink source was accepted"
+  fi
+  rm -f "$d/calm-src/calm" "$d/calm-src/calm-link"
+  mv "$d/calm-src/calm-real" "$d/calm-src/calm"
+  ln -s "$d/outside-target" "$d/calm-dest/calm"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm symlink destination was accepted"
+  fi
+  rm -f "$d/calm-dest/calm"
+  printf 'off\n' > "$d/calm-dest/calm"
+  ln "$d/calm-dest/calm" "$d/calm-dest/calm-link"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm hardlinked destination was accepted"
+  fi
+  rm -f "$d/calm-dest/calm" "$d/calm-dest/calm-link"
+  linked_parent="$d/calm-linked-parent"
+  linked_target="$d/calm-linked-target"
+  mkdir -p "$linked_target"
+  printf 'codex\n' > "$linked_target/crew-harness"
+  printf 'off\n' > "$linked_target/calm"
+  printf 'pi\n' > "$d/calm-src/crew-harness"
+  chmod 0444 "$linked_target/calm"
+  ln -s "$linked_target" "$linked_parent"
+  if propagate_inheritable_config "$d/calm-src" "$linked_parent" 2>"$stderr"; then
+    fail "calm symlinked destination parent was accepted"
+  fi
+  [ "$(cat "$linked_target/calm")" = off ] || fail "calm symlinked parent changed its target file"
+  [ "$(cat "$linked_target/crew-harness")" = codex ] \
+    || fail "symlinked config parent changed its ordinary target file"
+  [ "$(fm_inherit_file_mode "$linked_target/calm")" = 444 ] \
+    || fail "calm symlinked parent chmodded its target file"
+  find "$linked_target" -name '.calm.quarantine.*' | grep -q . \
+    && fail "calm symlinked parent quarantined its target file"
 
   pass "B1 propagate_inheritable_config: copy, idempotence, convergence, absence-mirror, exclusion, no-op, skip diagnostics"
 }
@@ -702,7 +763,7 @@ new_world() {
   {
     printf 'projects/\nstate/\ndata/\n.no-mistakes/\n'
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
-    printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\n'
+    printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\nconfig/calm\n'
   } > "$w/main/.gitignore"
   printf 'v1\n' > "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
@@ -716,13 +777,14 @@ new_world() {
 # A live secondmate home as a DETACHED worktree of the primary at <commit>, with
 # its seed marker and a live kind=secondmate meta.
 add_sm_worktree() {
-  local w=$1 id=$2 commit=$3
+  local w=$1 id=$2 commit=$3 harness=${4:-codex}
   git -C "$w/main" worktree add -q --detach "$w/$id" "$commit"
   printf '%s\n' "$id" > "$w/$id/.fm-secondmate-home"
   {
     printf 'window=firstmate:fm-%s\n' "$id"
     printf 'kind=secondmate\n'
     printf 'home=%s/%s\n' "$w" "$id"
+    printf 'harness=%s\n' "$harness"
   } > "$w/home/state/$id.meta"
 }
 
@@ -1221,19 +1283,21 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   local w head log out err status instr_a instr_b multiline_json pointer
   w=$(new_world config-reread-per-home)
   head=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" alpha "$head"
-  add_sm_worktree "$w" beta "$head"
+  add_sm_worktree "$w" alpha "$head" pi
+  add_sm_worktree "$w" beta "$head" codex
   mkdir -p "$w/alpha/config" "$w/beta/config" "$w/alpha/state" "$w/beta/state"
 
   # alpha is stale on harness + backlog; beta is stale on multiline dispatch only.
   printf 'pi\n' > "$w/alpha/config/crew-harness"
   printf 'tasks-axi\n' > "$w/alpha/config/backlog-backend"
+  printf 'off\n' > "$w/alpha/config/calm"
   printf '{"default":{"harness":"old"}}\n' > "$w/beta/config/crew-dispatch.json"
 
   multiline_json=$(printf '{\n  "default": {\n    "harness": "grok",\n    "model": "grok-4.5"\n  },\n  "rules": [\n    {"when": "news", "use": {"harness": "grok"}}\n  ]\n}\n')
   printf '%s' "$multiline_json" > "$w/home/config/crew-dispatch.json"
   printf 'codex\n' > "$w/home/config/crew-harness"
   printf 'manual\n' > "$w/home/config/backlog-backend"
+  printf 'on\n' > "$w/home/config/calm"
   {
     shared_captain_header_for_tests
     printf '%s\n' "shared secret preference body that must never appear in a config reread"
@@ -1252,6 +1316,8 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
     || fail "beta did not receive multiline dispatch"
   [ "$(cat "$w/alpha/config/crew-harness")" = codex ] || fail "alpha harness not updated"
   [ "$(cat "$w/alpha/config/backlog-backend")" = manual ] || fail "alpha backlog-backend not updated"
+  [ "$(cat "$w/alpha/config/calm")" = on ] || fail "alpha Calm preference not updated"
+  [ "$(fm_inherit_file_mode "$w/alpha/config/calm")" = 444 ] || fail "alpha Calm preference is not read-only"
 
   instr_a=$(reread_instruction_path "$w/alpha") || fail "alpha instruction missing after config push"
   instr_b=$(reread_instruction_path "$w/beta") || fail "beta instruction missing after config push"
@@ -1264,16 +1330,22 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   # (all three config items were missing/stale and therefore pushed).
   assert_grep "These inherited config files changed" "$instr_a" "alpha framing missing"
   assert_grep "defaults/rules" "$instr_a" "alpha must preserve agent judgment framing"
+  assert_grep "Persistence does not change this live transcript" "$instr_a" \
+    "Pi Calm framing must state that persistence does not change the live transcript"
+  assert_grep "next Pi session" "$instr_a" \
+    "Pi Calm framing must state the next-session boundary"
   assert_contains "$(cat "$instr_a")" "config/crew-dispatch.json" "alpha missing dispatch path"
   assert_contains "$(cat "$instr_a")" "config/crew-harness" "alpha missing harness path"
   assert_contains "$(cat "$instr_a")" "config/backlog-backend" "alpha missing backlog path"
+  assert_contains "$(cat "$instr_a")" "config/calm" "alpha missing Calm path"
   # Path order follows FM_INHERITABLE_CONFIG.
   awk '
     /config\/crew-dispatch\.json/ { d=NR }
     /config\/crew-harness/ { h=NR }
     /config\/backlog-backend/ { b=NR }
+    /config\/calm/ { c=NR }
     END {
-      if (!(d && h && b && d < h && h < b)) exit 1
+      if (!(d && h && b && c && d < h && h < b && b < c)) exit 1
     }
   ' "$instr_a" || fail "alpha instruction path order is not deterministic allowlist order"
 
@@ -1294,6 +1366,10 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
     "captain-shared content must never be inlined"
   assert_not_contains "$(cat "$instr_b")" "shared secret preference body" \
     "beta must not inline captain-shared either"
+  assert_not_contains "$(cat "$instr_b")" "config/calm" \
+    "Codex home must not receive a Calm instruction"
+  assert_not_contains "$(cat "$instr_b")" "next Pi session" \
+    "Codex home must not receive Calm behavioral framing"
 
   # Beta started with only dispatch stale; harness/backlog were absent on both
   # sides for beta... wait: primary has harness+backlog, beta lacked them, so
@@ -1315,6 +1391,180 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   assert_not_contains "$(cat "$log")" $'\n  "default"' "sent message must not contain embedded newlines"
   assert_not_contains "$(cat "$log")" "Default worker" "sent message must not summarize"
   pass "B15 config reread is per-home, exact-byte, ordered, and pointer-only"
+}
+
+test_calm_notification_is_pi_gated_and_retryable() {
+  local harness w head log out status instruction retry_log retry_out retry_status
+  for harness in claude codex opencode grok; do
+    w=$(new_world "calm-gate-$harness")
+    head=$(git -C "$w/main" rev-parse HEAD)
+    add_sm_worktree "$w" sm "$head" "$harness"
+    printf 'on\n' > "$w/home/config/calm"
+    log="$w/calm-gate.tmux.log"
+    out=$(run_config_push "$w" "$log" 2>/dev/null); status=$?
+    expect_code 0 "$status" "$harness Calm-only push should succeed"
+    [ "$(cat "$w/sm/config/calm")" = on ] || fail "$harness home did not receive persisted Calm preference"
+    assert_not_contains "$out" "config-reread: sent" \
+      "$harness home received a Calm reread result"
+    [ ! -s "$log" ] || fail "$harness home received a Calm behavioral instruction"
+    assert_no_reread_instructions "$w/sm"
+  done
+
+  w=$(new_world calm-gate-pi-retry)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head" pi
+  mkdir -p "$w/sm/config" "$w/sm/state"
+  printf 'off\n' > "$w/sm/config/calm"
+  printf 'on\n' > "$w/home/config/calm"
+  log="$w/calm-pi-failed.tmux.log"
+  out=$(FM_FAKE_TMUX_FAIL_LITERAL=1 run_config_push "$w" "$log" 2>/dev/null); status=$?
+  expect_code 1 "$status" "Pi Calm send failure should remain retryable"
+  instruction=$(reread_instruction_path "$w/sm") || fail "Pi Calm retry generation missing"
+  assert_present "$instruction.pending" "Pi Calm retry marker missing"
+  assert_contains "$(cat "$instruction")" "config/calm" \
+    "Pi Calm retry generation omitted the preference"
+  assert_contains "$(cat "$instruction")" "Persistence does not change this live transcript" \
+    "Pi Calm retry generation omitted the live-transcript boundary"
+  assert_contains "$(cat "$instruction")" "next Pi session" \
+    "Pi Calm retry generation omitted the next-session boundary"
+  assert_not_contains "$(cat "$instruction")" "Re-read and apply their exact contents at every future intake" \
+    "Pi Calm retry generation used generic reread framing"
+
+  retry_log="$w/calm-pi-retry.tmux.log"
+  retry_out=$(run_config_push "$w" "$retry_log" 2>/dev/null); retry_status=$?
+  expect_code 0 "$retry_status" "Pi Calm retry should succeed"
+  assert_contains "$retry_out" "config-reread: sent" \
+    "Pi Calm retry did not report delivery"
+  [ ! -e "$instruction.pending" ] || fail "Pi Calm retry marker survived successful delivery"
+  assert_contains "$(cat "$retry_log")" "CONFIG_REREAD: $instruction" \
+    "Pi Calm retry did not route its durable generation"
+  pass "B16 Calm notifications are Pi-only, next-session-specific, and retryable"
+}
+
+write_legacy_mixed_calm_generation() {
+  local path=$1 framing=${2:-$FM_CONFIG_REREAD_FRAMING}
+  {
+    printf '%s\n' "$framing"
+    printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n'
+    printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}'
+    printf '%s\n' '-----END config/crew-dispatch.json-----'
+    printf '\nconfig/calm\n-----BEGIN config/calm-----\non\n-----END config/calm-----\n'
+    printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n'
+  } > "$path"
+  chmod 0600 "$path"
+}
+
+write_legacy_mixed_without_calm() {
+  local path=$1
+  {
+    printf '%s\n' "$FM_CONFIG_REREAD_FRAMING"
+    printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n'
+    printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}'
+    printf '%s\n' '-----END config/crew-dispatch.json-----'
+    printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n'
+  } > "$path"
+}
+
+write_legacy_calm_only_generation() {
+  local path=$1
+  printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" > "$path"
+  printf '\nconfig/calm\n-----BEGIN config/calm-----\noff\n-----END config/calm-----\n' >> "$path"
+  chmod 0600 "$path"
+}
+
+test_legacy_calm_generations_migrate_without_losing_order() {
+  local harness w head fakebin report state_real mixed expected calm_only log out status
+  local old new pi_expected old_line new_line
+  for harness in claude codex opencode grok; do
+    w=$(new_world "legacy-calm-$harness")
+    head=$(git -C "$w/main" rev-parse HEAD)
+    add_sm_worktree "$w" sm "$head" "$harness"
+    mkdir -p "$w/sm/state"
+    state_real=$(cd "$w/sm/state" && pwd -P)
+    mixed="$state_real/.fm-inherited-config-reread.0001-mixed"
+    expected="$w/mixed.expected"
+    write_legacy_mixed_calm_generation "$mixed"
+    write_legacy_mixed_without_calm "$expected"
+    fm_config_reread_mark_pending "$mixed" "$mixed.pending" \
+      || fail "$harness legacy mixed generation could not be marked pending"
+    report="$w/empty.report"
+    : > "$report"
+    fakebin=$(make_fake_toolchain "$w")
+    log="$w/mixed.tmux.log"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+      fm_config_send_reread_nudge sm "$w/sm" "$report" "$harness" 2>&1); status=$?
+    expect_code 0 "$status" "$harness legacy mixed generation should deliver"
+    [ -z "$out" ] || fail "$harness legacy mixed generation printed unexpected output: $out"
+    cmp -s "$expected" "$mixed" \
+      || fail "$harness legacy migration did not preserve ordinary blocks byte-exact"
+    [ ! -e "$mixed.pending" ] || fail "$harness legacy mixed generation stayed pending"
+    assert_contains "$(cat "$log")" "CONFIG_REREAD: $mixed" \
+      "$harness legacy mixed generation was not delivered"
+
+    calm_only="$state_real/.fm-inherited-config-reread.0002-calm-only"
+    write_legacy_calm_only_generation "$calm_only"
+    fm_config_reread_mark_pending "$calm_only" "$calm_only.pending" \
+      || fail "$harness Calm-only generation could not be marked pending"
+    : > "$log"
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+      fm_config_send_reread_nudge sm "$w/sm" "$report" "$harness" 2>&1); status=$?
+    expect_code 0 "$status" "$harness Calm-only legacy generation should be consumed"
+    [ -z "$out" ] || fail "$harness Calm-only generation printed unexpected output: $out"
+    [ ! -e "$calm_only" ] || fail "$harness Calm-only generation was not consumed"
+    [ ! -e "$calm_only.pending" ] || fail "$harness Calm-only retry marker was not consumed"
+    [ ! -s "$log" ] || fail "$harness received a Calm-only legacy instruction"
+  done
+
+  w=$(new_world legacy-calm-pi-order)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head" pi
+  mkdir -p "$w/sm/state"
+  state_real=$(cd "$w/sm/state" && pwd -P)
+  old="$state_real/.fm-inherited-config-reread.0001-legacy-calm"
+  new="$state_real/.fm-inherited-config-reread.0002-ordinary"
+  pi_expected="$w/pi.expected"
+  write_legacy_mixed_calm_generation "$old"
+  write_legacy_mixed_calm_generation "$pi_expected" "$FM_CONFIG_CALM_FRAMING"
+  printf '%s\n\nconfig/crew-harness\n-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----\n' \
+    "$FM_CONFIG_REREAD_FRAMING" > "$new"
+  chmod 0600 "$new"
+  fm_config_reread_mark_pending "$old" "$old.pending" \
+    || fail "Pi legacy Calm generation could not be marked pending"
+  fm_config_reread_mark_pending "$new" "$new.pending" \
+    || fail "Pi newer ordinary generation could not be marked pending"
+  report="$w/empty.report"
+  : > "$report"
+  fakebin=$(make_fake_toolchain "$w")
+  log="$w/pi-order.tmux.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_FAIL_LITERAL=1 \
+    fm_config_send_reread_nudge sm "$w/sm" "$report" pi 2>&1); status=$?
+  expect_code 1 "$status" "Pi legacy Calm send failure should remain retryable"
+  assert_contains "$out" "CONFIG_REREAD: secondmate sm: send failed" \
+    "Pi legacy Calm send failure diagnostic missing"
+  cmp -s "$pi_expected" "$old" \
+    || fail "Pi legacy Calm generation did not receive approved framing byte-exact"
+  assert_present "$old.pending" "Pi legacy Calm retry marker was lost"
+  assert_present "$new.pending" "Pi newer generation advanced after the older failure"
+  assert_not_contains "$(cat "$log")" "CONFIG_REREAD: $new" \
+    "Pi newer generation delivered before the older retry"
+
+  : > "$log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$w/home/state" FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
+    fm_config_send_reread_nudge sm "$w/sm" "$report" pi 2>&1); status=$?
+  expect_code 0 "$status" "Pi legacy Calm retry should deliver"
+  [ -z "$out" ] || fail "Pi legacy Calm retry printed unexpected output: $out"
+  old_line=$(grep -n -F "CONFIG_REREAD: $old" "$log" | head -1 | cut -d: -f1)
+  new_line=$(grep -n -F "CONFIG_REREAD: $new" "$log" | head -1 | cut -d: -f1)
+  [ -n "$old_line" ] && [ -n "$new_line" ] && [ "$old_line" -lt "$new_line" ] \
+    || fail "Pi legacy migration changed retry ordering"
+  [ ! -e "$old.pending" ] || fail "Pi legacy Calm retry marker survived delivery"
+  [ ! -e "$new.pending" ] || fail "Pi newer retry marker survived delivery"
+  pass "B16 legacy Calm generations migrate byte-exact without losing retry order"
 }
 
 test_config_reread_isolation_and_absent_and_send_failure() {
@@ -2075,6 +2325,8 @@ test_config_push_reports_skips_dirty_and_invalid_home
 test_config_push_exits_nonzero_on_copy_error
 test_config_push_rereads_after_partial_propagation
 test_config_reread_per_home_changed_sets_and_exact_bytes
+test_calm_notification_is_pi_gated_and_retryable
+test_legacy_calm_generations_migrate_without_losing_order
 test_config_reread_isolation_and_absent_and_send_failure
 test_config_reread_publication_failure_retries_exact_generation
 test_config_reread_write_failure_retains_exact_retry_generation
