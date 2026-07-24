@@ -1796,16 +1796,16 @@ test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
   local source resolver recovery_ensure recovery_lock recovery_resolve fresh_ensure fresh_lock fresh_resolve
   source=$(cat "$ROOT/bin/fm-spawn.sh")
   resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
-  [ "$(printf '%s' "$source" | grep -Fc 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"')" -eq 2 ] \
+  [ "$(printf '%s' "$source" | grep -Fc "spawn_herdr_parent_resolve \"\$HERDR_SES\" \"\$HERDR_LABEL_HOME\"")" -eq 2 ] \
     || fail "fm-spawn should resolve the Herdr parent exactly once in each locked presentation path"
   assert_not_contains "$resolver" "workspace_binding_publish" \
     "presentation parent resolution promoted binding state and cleared pending recovery authority"
   recovery_ensure=$(grep -n 'presentation recovery could not ensure' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
   recovery_lock=$(grep -n 'presentation recovery could not acquire' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
-  recovery_resolve=$(grep -nF 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  recovery_resolve=$(grep -nF "spawn_herdr_parent_resolve \"\$HERDR_SES\" \"\$HERDR_LABEL_HOME\"" "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
   fresh_ensure=$(grep -n 'presentation could not ensure its session server' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
   fresh_lock=$(grep -n 'elif spawn_herdr_presentation_order_lock_acquire' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
-  fresh_resolve=$(grep -nF 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"' "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  fresh_resolve=$(grep -nF "spawn_herdr_parent_resolve \"\$HERDR_SES\" \"\$HERDR_LABEL_HOME\"" "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
   [ "$recovery_ensure" -lt "$recovery_lock" ] && [ "$recovery_lock" -lt "$recovery_resolve" ] \
     || fail "recovery resolves its parent before the named session and presentation lock are ready"
   [ "$fresh_ensure" -lt "$fresh_lock" ] && [ "$fresh_lock" -lt "$fresh_resolve" ] \
