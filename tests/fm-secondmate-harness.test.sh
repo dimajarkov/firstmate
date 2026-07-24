@@ -1443,22 +1443,26 @@ test_calm_notification_is_pi_gated_and_retryable() {
 
 write_legacy_mixed_calm_generation() {
   local path=$1 framing=${2:-$FM_CONFIG_REREAD_FRAMING}
-  printf '%s\n' "$framing" > "$path"
-  printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n' >> "$path"
-  printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}' >> "$path"
-  printf '%s\n' '-----END config/crew-dispatch.json-----' >> "$path"
-  printf '\nconfig/calm\n-----BEGIN config/calm-----\non\n-----END config/calm-----\n' >> "$path"
-  printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n' >> "$path"
+  {
+    printf '%s\n' "$framing"
+    printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n'
+    printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}'
+    printf '%s\n' '-----END config/crew-dispatch.json-----'
+    printf '\nconfig/calm\n-----BEGIN config/calm-----\non\n-----END config/calm-----\n'
+    printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n'
+  } > "$path"
   chmod 0600 "$path"
 }
 
 write_legacy_mixed_without_calm() {
   local path=$1
-  printf '%s\n' "$FM_CONFIG_REREAD_FRAMING" > "$path"
-  printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n' >> "$path"
-  printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}' >> "$path"
-  printf '%s\n' '-----END config/crew-dispatch.json-----' >> "$path"
-  printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n' >> "$path"
+  {
+    printf '%s\n' "$FM_CONFIG_REREAD_FRAMING"
+    printf '\nconfig/crew-dispatch.json\n-----BEGIN config/crew-dispatch.json-----\n'
+    printf '%s' '{"default":{"harness":"codex"},"note":"ordinary config/calm text"}'
+    printf '%s\n' '-----END config/crew-dispatch.json-----'
+    printf '\nconfig/backlog-backend\n-----BEGIN config/backlog-backend-----\nmanual\n-----END config/backlog-backend-----\n'
+  } > "$path"
 }
 
 write_legacy_calm_only_generation() {
