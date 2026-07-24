@@ -133,6 +133,15 @@ case "$cmd $sub" in
   "pane list")
     jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}]}}'
     ;;
+  "pane get")
+    pane=${3:-}
+    if jq_state -e --arg p "$pane" '.tabs[] | select(.pane_id == $p)' >/dev/null; then
+      jq_state --arg p "$pane" \
+        '{result:{pane:(.tabs[]|select(.pane_id==$p)|{pane_id:.pane_id,tab_id:.tab_id})}}'
+    else
+      printf '{"error":{"code":"pane_not_found","message":"pane target %s not found"}}\n' "$pane"
+    fi
+    ;;
   "pane close")
     pane=${3:-}
     jq_state --arg p "$pane" '.tabs |= [.[]|select(.pane_id != $p)]' | save
@@ -166,6 +175,13 @@ SH
 fake_herdr_set_agent_status() {  # <state-file> <pane_id> <status>
   local state=$1 pane=$2 status=$3 tmp="$1.tmp.$$"
   jq --arg p "$pane" --arg s "$status" '.agent_status[$p] = $s' "$state" > "$tmp" && mv "$tmp" "$state"
+}
+
+herdr_workspace_record_path() {  # <home> <record-name> <session>
+  FM_HOME="$1" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_workspace_record_path "$1" "$2"
+  ' "$ROOT" "$2" "$3"
 }
 
 # herdr_case <name> -> sets up FM_HERDR_LOG/FM_HERDR_RESPONSES/fb for one test,
@@ -630,7 +646,7 @@ test_container_ensure_creates_with_no_focus_flag() {
 }
 
 test_container_ensure_uses_secondmate_home_label() {
-  local dir log resp fb out home
+  local dir log resp fb out home binding recovery
   dir="$TMP_ROOT/container-secondmate-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home/state"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
@@ -643,8 +659,12 @@ test_container_ensure_uses_secondmate_home_label() {
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2🏴‍☠️-sshhip-h7' \
     "container_ensure did not create the workspace under this secondmate home's own label"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  [ "$(sed -n 's/^workspace_id=//p' "$binding")" = w9 ] \
     || fail "container_ensure did not publish the exact secondmate workspace binding"
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
+    || fail "container_ensure did not retain the seeded-tab recovery authority through task creation"
   pass "fm_backend_herdr_container_ensure: creates the workspace under the SECONDMATE home's own label, not 'firstmate'"
 }
 
@@ -736,10 +756,12 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
   printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/2.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/3.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/4.out"
-  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/5.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/8.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/9.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/7.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     bash -c '
@@ -779,10 +801,12 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/2.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/3.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/4.out"
-  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/5.out"
   printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
-  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/8.out"
-  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/9.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/7.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t3","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t3"}]}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
@@ -917,10 +941,9 @@ test_projection_seeded_prune_refuses_active_tab() {
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9","focused":true},{"tab_id":"w9:t2","label":"fm-task","workspace_id":"w9","focused":false}]}}' > "$resp/1.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}' > "$resp/2.out"
-  printf '%s\n' '{"error":{"code":"agent_not_found"}}' > "$resp/3.out"
-  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w9","active_tab_id":"w9:t1","focused":true}]}}' > "$resp/4.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","focused":true},{"tab_id":"w9:t2","focused":false}]}}' > "$resp/5.out"
-  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}' > "$resp/6.out"
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w9","active_tab_id":"w9:t1","focused":true}]}}' > "$resp/3.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w9:t1","focused":true},{"tab_id":"w9:t2","focused":false}]}}' > "$resp/4.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}' > "$resp/5.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_prune_seeded_default_tab fmtest w9 w9:t1 focus-preserving' "$ROOT" 2>&1)
@@ -1665,12 +1688,14 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk() {
 # --- workspace_find: scoped to THIS home's exact operational identity -------
 
 test_workspace_find_uses_exact_binding_when_display_labels_collide() {
-  local dir log resp fb out home1 home2
+  local dir log resp fb out home1 home2 binding1 binding2
   dir="$TMP_ROOT/find-scoped"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home1="$TMP_ROOT/find-scoped-home-foo"; mkdir -p "$home1/state"; printf 'foo\n' > "$home1/.fm-secondmate-home"
   home2="$TMP_ROOT/find-scoped-home-foo-secondmate"; mkdir -p "$home2/state"; printf 'foo-secondmate\n' > "$home2/.fm-secondmate-home"
-  printf 'version=1\nhome_id=foo\nsession=fmtest\nworkspace_id=w2\n' > "$home1/state/.herdr-workspace"
-  printf 'version=1\nhome_id=foo-secondmate\nsession=fmtest\nworkspace_id=w3\n' > "$home2/state/.herdr-workspace"
+  binding1=$(herdr_workspace_record_path "$home1" .herdr-workspace fmtest)
+  binding2=$(herdr_workspace_record_path "$home2" .herdr-workspace fmtest)
+  printf 'version=1\nhome_id=foo\nsession=fmtest\nworkspace_id=w2\n' > "$binding1"
+  printf 'version=1\nhome_id=foo-secondmate\nsession=fmtest\nworkspace_id=w3\n' > "$binding2"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-foo"},{"workspace_id":"w3","label":"2🏴‍☠️-foo"}]}}\n' > "$resp/1.out"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-foo"},{"workspace_id":"w3","label":"2🏴‍☠️-foo"}]}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -1681,6 +1706,50 @@ test_workspace_find_uses_exact_binding_when_display_labels_collide() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT" )
   [ "$out" = "w3" ] || fail "foo-secondmate should resolve its exact workspace binding, got '$out'"
   pass "fm_backend_herdr_workspace_find: suffix-colliding homes stay isolated by exact workspace binding"
+}
+
+test_workspace_find_accepts_manually_renamed_bound_workspace() {
+  local dir log resp fb out home binding
+  dir="$TMP_ROOT/find-renamed-bound"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/find-renamed-bound-home"; mkdir -p "$home/state"; printf 'renamed-secondmate\n' > "$home/.fm-secondmate-home"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  printf 'version=1\nhome_id=renamed-secondmate\nsession=fmtest\nworkspace_id=w7\n' > "$binding"
+  printf '{"result":{"workspaces":[{"workspace_id":"w7","label":"captain renamed this space"}]}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT")
+  [ "$out" = w7 ] || fail "an exact bound workspace should survive a presentation-only manual label rename, got '$out'"
+  assert_not_contains "$(cat "$log")" $'\x1fworkspace\x1fcreate' \
+    "manual label rename triggered replacement workspace creation"
+  pass "fm_backend_herdr_workspace_find: exact per-session bindings survive manual label renames"
+}
+
+test_workspace_records_are_isolated_per_session() {
+  local home binding_a binding_b recovery_a recovery_b out
+  home="$TMP_ROOT/session-record-home"; mkdir -p "$home/state"; printf 'sessions-secondmate\n' > "$home/.fm-secondmate-home"
+  binding_a=$(herdr_workspace_record_path "$home" .herdr-workspace session-a)
+  binding_b=$(herdr_workspace_record_path "$home" .herdr-workspace session-b)
+  recovery_a=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery session-a)
+  recovery_b=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery session-b)
+  out=$(FM_HOME="$home" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_workspace_binding_publish session-a w1
+    fm_backend_herdr_workspace_recovery_publish session-a w1 w1:t1
+    fm_backend_herdr_workspace_binding_publish session-b w2
+    fm_backend_herdr_workspace_recovery_publish session-b w2 w2:t1
+    fm_backend_herdr_workspace_recovery_clear session-b w2
+    printf "%s\t%s" \
+      "$(fm_backend_herdr_workspace_bound_id session-a)" \
+      "$(fm_backend_herdr_workspace_bound_id session-b)"
+  ' "$ROOT")
+  [ "$out" = $'w1\tw2' ] || fail "per-session workspace bindings resolved incorrectly: '$out'"
+  [ -f "$binding_a" ] && [ -f "$binding_b" ] \
+    || fail "publishing one session overwrote another session's workspace binding"
+  [ -f "$recovery_a" ] \
+    || fail "clearing session-b recovery removed session-a recovery authority"
+  [ ! -e "$recovery_b" ] \
+    || fail "session-b recovery clear did not remove its own exact record"
+  pass "Herdr workspace records: bindings and recovery authority are isolated per named session"
 }
 
 test_workspace_find_adopts_one_legacy_label_only() {
@@ -1696,7 +1765,7 @@ test_workspace_find_adopts_one_legacy_label_only() {
 }
 
 test_workspace_ensure_binds_legacy_workspace_without_renaming() {
-  local dir log resp fb out home
+  local dir log resp fb out home binding
   dir="$TMP_ROOT/ensure-legacy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/ensure-legacy-home"; mkdir -p "$home/state"; printf 'legacy-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"2ndmate-legacy-secondmate"}]}}\n' > "$resp/1.out"
@@ -1704,7 +1773,8 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
   [ "$out" = "w1" ] || fail "workspace_ensure should retain the legacy workspace, got '$out'"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w1 ] \
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  [ "$(sed -n 's/^workspace_id=//p' "$binding")" = w1 ] \
     || fail "workspace_ensure did not bind the adopted legacy workspace exactly"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''rename' "legacy adoption renamed the workspace"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "legacy adoption created a replacement workspace"
@@ -1712,26 +1782,28 @@ test_workspace_ensure_binds_legacy_workspace_without_renaming() {
 }
 
 test_workspace_binding_accepts_only_in_home_state_symlinks() {
-  local home inside outside out status
+  local home inside outside out status binding
   home="$TMP_ROOT/binding-symlink-home"; inside="$home/runtime/state"; outside="$TMP_ROOT/binding-symlink-outside"
   mkdir -p "$inside" "$outside"
   printf 'symlink-secondmate\n' > "$home/.fm-secondmate-home"
   ln -s runtime/state "$home/state"
   FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish fmtest w-safe' "$ROOT" \
     || fail "an in-home state symlink should accept binding publication"
-  [ "$(sed -n 's/^workspace_id=//p' "$inside/.herdr-workspace")" = w-safe ] \
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  [ "$(sed -n 's/^workspace_id=//p' "$binding")" = w-safe ] \
     || fail "the in-home state symlink did not receive the exact workspace binding"
   rm "$home/state"
   ln -s "$outside" "$home/state"
   out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish fmtest w-unsafe' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "an out-of-home state symlink should refuse binding publication"
-  [ ! -e "$outside/.herdr-workspace" ] || fail "unsafe state symlink publication escaped the secondmate home"
+  [ -z "$(find "$outside" -name '.herdr-workspace-*' -print -quit)" ] \
+    || fail "unsafe state symlink publication escaped the secondmate home"
   pass "Herdr workspace binding: in-home state symlinks work and escaping symlinks fail closed"
 }
 
 test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure() {
-  local dir log resp fb out status home
+  local dir log resp fb out status home recovery
   dir="$TMP_ROOT/binding-rollback"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/binding-rollback-home"; mkdir -p "$home/state"; printf 'rollback-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
@@ -1746,13 +1818,14 @@ test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure() {
     "late binding publication failure did not close the exact response-created root pane"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''close' \
     "late binding publication failure used broad workspace-close authority"
-  [ ! -e "$home/state/.herdr-workspace-recovery" ] \
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  [ ! -e "$recovery" ] \
     || fail "verified exact rollback left an unnecessary recovery binding"
   pass "fm_backend_herdr_workspace_ensure: late binding failure rolls back only the exact created pane"
 }
 
 test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
-  local dir log resp fb out status home
+  local dir log resp fb out status home recovery binding
   dir="$TMP_ROOT/binding-rollback-fails"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/binding-rollback-fails-home"; mkdir -p "$home/state"; printf 'rollback-fails-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
@@ -1764,9 +1837,11 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "failed exact rollback should still fail workspace ensure"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace-recovery")" = w9 ] \
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  [ "$(sed -n 's/^workspace_id=//p' "$recovery")" = w9 ] \
     || fail "failed exact rollback did not retain the response-created workspace id"
-  [ "$(sed -n 's/^seeded_tab_id=//p' "$home/state/.herdr-workspace-recovery")" = w9:t1 ] \
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
     || fail "failed exact rollback did not retain the response-created seeded tab id"
   rm -f "$resp/.count"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/1.out"
@@ -1782,17 +1857,17 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
       printf "%s\t%s" "$FM_BACKEND_HERDR_WS_ID" "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
     ' "$ROOT")
   [ "$out" = $'w9\tw9:t1' ] || fail "retry did not recover the exact workspace and seeded tab, got '$out'"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+  [ "$(sed -n 's/^workspace_id=//p' "$binding")" = w9 ] \
     || fail "retry did not promote the recovery record to the authoritative binding"
-  [ ! -e "$home/state/.herdr-workspace-recovery" ] \
-    || fail "retry left the recovery record after publishing the authoritative binding"
+  [ -e "$recovery" ] \
+    || fail "retry discarded recovery authority before task creation and seeded-tab pruning"
   [ "$(grep -c $'\x1f''workspace'$'\x1f''create' "$log")" -eq 1 ] \
     || fail "retry created another workspace instead of adopting the retained exact id"
   pass "fm_backend_herdr_workspace_ensure: failed exact rollback retains a retry-safe workspace binding"
 }
 
 test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed() {
-  local dir log resp fb out status home
+  local dir log resp fb out status home recovery
   dir="$TMP_ROOT/binding-rollback-malformed-list"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/binding-rollback-malformed-list-home"; mkdir -p "$home/state"; printf 'rollback-malformed-secondmate\n' > "$home/.fm-secondmate-home"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/1.out"
@@ -1803,9 +1878,10 @@ test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_binding_publish() { return 1; }; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "late binding publication failure should fail workspace ensure"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace-recovery")" = w9 ] \
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  [ "$(sed -n 's/^workspace_id=//p' "$recovery")" = w9 ] \
     || fail "schema-invalid rollback verification discarded the exact workspace recovery id"
-  [ "$(sed -n 's/^seeded_tab_id=//p' "$home/state/.herdr-workspace-recovery")" = w9:t1 ] \
+  [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
     || fail "schema-invalid rollback verification discarded the exact seeded tab recovery id"
   pass "fm_backend_herdr_workspace_ensure: malformed rollback lists retain exact recovery authority"
 }
@@ -1814,7 +1890,7 @@ test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable() {
   local dir log resp fb out status home recovery
   dir="$TMP_ROOT/binding-recovery-unreadable-seed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/binding-recovery-unreadable-seed-home"; mkdir -p "$home/state"; printf 'recovery-unreadable-secondmate\n' > "$home/.fm-secondmate-home"
-  recovery="$home/state/.herdr-workspace-recovery"
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
   printf 'version=1\nhome_id=recovery-unreadable-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-recovery-unreadable"}]}}\n' > "$resp/1.out"
   printf '{}\n' > "$resp/2.out"
@@ -1825,7 +1901,7 @@ test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable() {
   [ "$status" -ne 0 ] || fail "unreadable seeded-tab revalidation should fail workspace ensure"
   [ "$(sed -n 's/^seeded_tab_id=//p' "$recovery")" = w9:t1 ] \
     || fail "unreadable seeded-tab revalidation discarded recovery authority"
-  [ ! -e "$home/state/.herdr-workspace" ] \
+  [ ! -e "$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)" ] \
     || fail "unreadable seeded-tab revalidation published an authoritative binding"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' \
     "unreadable seeded-tab revalidation created another workspace"
@@ -1836,7 +1912,7 @@ test_workspace_ensure_drops_recovered_seed_authority_for_live_agent() {
   local dir log resp fb out home recovery
   dir="$TMP_ROOT/binding-recovery-live-seed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/binding-recovery-live-seed-home"; mkdir -p "$home/state"; printf 'recovery-live-secondmate\n' > "$home/.fm-secondmate-home"
-  recovery="$home/state/.herdr-workspace-recovery"
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
   printf 'version=1\nhome_id=recovery-live-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-recovery-live"}]}}\n' > "$resp/1.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/2.out"
@@ -1851,12 +1927,101 @@ test_workspace_ensure_drops_recovered_seed_authority_for_live_agent() {
       printf "%s\t%s" "$FM_BACKEND_HERDR_WS_ID" "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
     ' "$ROOT")
   [ "$out" = $'w9\t' ] || fail "live recovered seed retained prune authority, got '$out'"
-  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+  [ "$(sed -n 's/^workspace_id=//p' "$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)")" = w9 ] \
     || fail "live recovered seed did not retain the workspace's authoritative binding"
   [ ! -e "$recovery" ] || fail "live recovered seed left stale recovery authority"
   assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
     "live recovered seed closed a registered idle agent pane"
   pass "fm_backend_herdr_workspace_ensure: registered agents revoke recovered seed prune authority"
+}
+
+test_workspace_recovery_refuses_split_seed_tab() {
+  local dir log resp fb out status home recovery
+  dir="$TMP_ROOT/binding-recovery-split-seed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-recovery-split-seed-home"; mkdir -p "$home/state"; printf 'recovery-split-secondmate\n' > "$home/.fm-secondmate-home"
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  printf 'version=1\nhome_id=recovery-split-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t1"}]}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_recovery_seeded_tab fmtest w9' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a split recovered seed tab must not grant prune authority"
+  [ -f "$recovery" ] || fail "split seed refusal discarded retry-safe recovery authority"
+  assert_not_contains "$(cat "$log")" $'\x1fpane\x1fclose' \
+    "split recovered seed tab was closed"
+  pass "Herdr seeded-tab recovery: split tabs never grant prune authority"
+}
+
+test_recovered_seed_rechecks_no_agent_at_close_boundary() {
+  local dir log resp fb out home recovery
+  dir="$TMP_ROOT/binding-recovery-close-race"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-recovery-close-race-home"; mkdir -p "$home/state"; printf 'recovery-race-secondmate\n' > "$home/.fm-secondmate-home"
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  printf 'version=1\nhome_id=recovery-race-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"renamed"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/6.out"
+  printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/7.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"},{"tab_id":"w9:t2","label":"fm-race"}]}}\n' > "$resp/8.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/9.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/10.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/11.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_workspace_ensure fmtest /tmp >/dev/null || exit 1
+      fm_backend_herdr_create_task fmtest:w9 fm-race /tmp "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
+    ' "$ROOT")
+  [ "$out" = "w9:t2 w9:p2" ] || fail "task creation should survive a safely refused seed prune, got '$out'"
+  [ -f "$recovery" ] || fail "close-boundary refusal discarded recovery authority"
+  assert_not_contains "$(cat "$log")" $'\x1fpane\x1fclose\x1fw9:p1' \
+    "close-boundary agent registration did not prevent seed-pane closure"
+  pass "Herdr seeded-tab pruning: no-agent is revalidated immediately before close"
+}
+
+test_seed_recovery_retries_after_create_and_prune_failures() {
+  local dir log resp fb out status home recovery
+  dir="$TMP_ROOT/binding-recovery-task-retries"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-recovery-task-retries-home"; mkdir -p "$home/state"; printf 'recovery-retry-secondmate\n' > "$home/.fm-secondmate-home"
+  recovery=$(herdr_workspace_record_path "$home" .herdr-workspace-recovery fmtest)
+  printf 'version=1\nhome_id=recovery-retry-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '1\n' > "$resp/2.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task fmtest:w9 fm-retry /tmp w9:t1' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "scripted task create failure unexpectedly succeeded"
+  [ -f "$recovery" ] || fail "task create failure discarded seeded-tab recovery authority"
+  rm -f "$resp/.count" "$resp/2.exit"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/2.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_workspace_prune_seeded_default_tab() { return 1; }
+      fm_backend_herdr_create_task fmtest:w9 fm-retry /tmp w9:t1
+    ' "$ROOT")
+  [ "$out" = "w9:t2 w9:p2" ] || fail "task creation should survive a retryable prune failure, got '$out'"
+  [ -f "$recovery" ] || fail "seed prune failure discarded retry authority"
+  rm -f "$resp/.count"
+  printf '{"result":{"tabs":[]}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w9:t3"},"root_pane":{"pane_id":"w9:p3"}}}\n' > "$resp/2.out"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_workspace_prune_seeded_default_tab() { return 0; }
+      fm_backend_herdr_create_task fmtest:w9 fm-retry /tmp w9:t1
+    ' "$ROOT")
+  [ "$out" = "w9:t3 w9:p3" ] || fail "successful retry returned unexpected ids: '$out'"
+  [ ! -e "$recovery" ] || fail "successful task creation and prune retained stale recovery authority"
+  pass "Herdr seeded-tab recovery: create and prune failures remain retryable"
 }
 
 test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
@@ -1920,10 +2085,11 @@ test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
 # --- list_live: scoped to this home's own workspace only ---------------------
 
 test_list_live_scoped_to_this_homes_workspace_only() {
-  local dir log resp fb out home
+  local dir log resp fb out home binding
   dir="$TMP_ROOT/list-live-scoped"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   home="$TMP_ROOT/list-live-scoped-home"; mkdir -p "$home/state"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
-  printf 'version=1\nhome_id=bravo-b2\nsession=fmtest\nworkspace_id=w2\n' > "$home/state/.herdr-workspace"
+  binding=$(herdr_workspace_record_path "$home" .herdr-workspace fmtest)
+  printf 'version=1\nhome_id=bravo-b2\nsession=fmtest\nworkspace_id=w2\n' > "$binding"
   # 1: workspace_find's `workspace list` - two homes coexist, secondmate's is w2
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-bravo-b2"}]}}\n' > "$resp/1.out"
   # 2: tab list --workspace w2 (this secondmate's own tabs only)
@@ -3391,6 +3557,8 @@ test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
 test_workspace_find_uses_exact_binding_when_display_labels_collide
+test_workspace_find_accepts_manually_renamed_bound_workspace
+test_workspace_records_are_isolated_per_session
 test_workspace_find_adopts_one_legacy_label_only
 test_workspace_ensure_binds_legacy_workspace_without_renaming
 test_workspace_binding_accepts_only_in_home_state_symlinks
@@ -3399,6 +3567,9 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails
 test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed
 test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable
 test_workspace_ensure_drops_recovered_seed_authority_for_live_agent
+test_workspace_recovery_refuses_split_seed_tab
+test_recovered_seed_rechecks_no_agent_at_close_boundary
+test_seed_recovery_retries_after_create_and_prune_failures
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_spawn_primary_parent_resolution_requires_one_exact_workspace
 test_list_live_scoped_to_this_homes_workspace_only

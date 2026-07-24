@@ -126,10 +126,11 @@ Once a workspace exists, spawning - primary or secondmate, workspace or tab - sh
 ### Label collisions: display is not operational identity
 
 Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-verified for workspaces specifically in this pass: creating a second workspace with an already-used label succeeds and produces two workspaces sharing that label).
-Secondmate homes therefore persist their exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding instead of selecting by the suffix-stripped display label.
+Secondmate homes therefore persist their exact workspace id and durable marker id in a home-local, session-keyed `state/.herdr-workspace-<digest>` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
+One named session's binding cannot overwrite another's, and a manually renamed workspace remains selected through its exact binding because labels are presentation-only.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
-If exact cleanup after a late binding-publication failure cannot verify removal of the response-created workspace, `state/.herdr-workspace-recovery` retains its exact workspace and seeded-tab ids so the next lookup adopts it instead of creating another and can still prune the safely revalidated, agent-free default tab.
+Each session's `state/.herdr-workspace-recovery-<digest>` record retains exact workspace and seeded-tab ids from creation until a task tab is created and the safely revalidated, single-pane, agent-free default tab is confirmed pruned.
 The primary home's established `firstmate` label lookup remains unchanged.
 
 ### No forced migration
@@ -291,8 +292,8 @@ Use a distinct name such as `$want` instead; `tests/fm-backend-herdr.test.sh` gr
 `fm_backend_herdr_create_task` accepts that value as an explicit 4th argument and is the ONLY place allowed to act on it; it never re-derives "prunable" from a tab's label or the workspace's tab count.
 An ordinary adopted workspace's caller passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an unrelated adopted workspace's tabs to be pruned, regardless of how they are labeled.
 
-Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present, re-checks it is still labeled `1`, and refuses if its pane's `agent get` reports `agent_status: working` (herdr's own native agent-state detection) - belt-and-suspenders against a live agent having landed there through some other path.
-Durable recovery carries seeded-tab prune authority forward only when the exact recovered pane is still positively classified as agent-free; any registered agent status revokes that authority.
+Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present, still labeled `1`, has exactly one pane, and is positively agent-free immediately before the exact close.
+Durable recovery carries seeded-tab prune authority forward only while those checks remain true; any registered agent status or split tab refuses pruning, and create or prune failure retains the record for a later retry.
 
 #### Incident: the 2026-07-02 self-kill
 
