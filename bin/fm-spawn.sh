@@ -337,9 +337,17 @@ spawn_herdr_presentation_order_lock_release() {
 }
 
 spawn_herdr_parent_resolve() {
-  local session=$1 home=$2
-  HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label)
-  HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
+  local session=$1 home=$2 status
+  HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
+  HERDR_PARENT_WORKSPACE_ID=
+  if FM_HOME="$home" fm_backend_herdr_secondmate_id >/dev/null; then
+    HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
+  else
+    status=$?
+    [ "$status" -eq 1 ] || return "$status"
+    HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
+      "$session" "$HERDR_PARENT_LABEL" 2>/dev/null || true)
+  fi
   if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
     HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id \
       "$session" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")

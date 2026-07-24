@@ -148,7 +148,6 @@ fm_backend_herdr_workspace_label() {
     case "$id" in
       *-secondmate) display=${id%-secondmate} ;;
     esac
-    [ -n "$display" ] || display=$id
     printf '2🏴‍☠️-%s' "$display"
   else
     status=$?
@@ -1094,6 +1093,24 @@ fm_backend_herdr_workspace_label_for_id() {  # <session> <workspace-id>
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
   printf '%s' "$list" | jq -r --arg workspace "$workspace" \
     '[.result.workspaces[]? | select(.workspace_id == $workspace and (.label | type) == "string") | .label] | if length == 1 then .[0] else empty end' 2>/dev/null
+}
+
+# fm_backend_herdr_projection_parent_workspace_exact: resolve one exact parent
+# workspace only when its presentation label is unique in the named session.
+fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-label>
+  local session=$1 parent_label=$2 list
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
+  printf '%s' "$list" | jq -er --arg parent_label "$parent_label" '
+    (.result.workspaces // null) as $spaces
+    | select(($spaces | type) == "array")
+    | [$spaces[]? | select(.label == $parent_label)]
+    | if length == 1
+        and (.[0].workspace_id | type) == "string"
+        and (.[0].workspace_id | length) > 0
+      then .[0].workspace_id
+      else empty
+      end
+  ' 2>/dev/null
 }
 
 # fm_backend_herdr_workspace_prune_seeded_default_tab: close EXACTLY

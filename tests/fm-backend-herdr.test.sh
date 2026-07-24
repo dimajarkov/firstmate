@@ -294,7 +294,7 @@ test_workspace_label_terminal_suffix_unicode_and_invalid_marker() {
   [ "$out" = "2🏴‍☠️-sintéz" ] || fail "Unicode marker should retain its display characters, got '$out'"
   printf '%s\n' '-secondmate' > "$home/.fm-secondmate-home"
   out=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT")
-  [ "$out" = "2🏴‍☠️--secondmate" ] || fail "empty suffix-derived marker should retain the durable id, got '$out'"
+  [ "$out" = "2🏴‍☠️-" ] || fail "the complete terminal suffix should be omitted, got '$out'"
   pass "fm_backend_herdr_workspace_label: simplifies only terminal suffixes and preserves Unicode"
 }
 
@@ -1813,6 +1813,43 @@ test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
   pass "fm-spawn: legacy parent resolution occurs only after server ensure and under the presentation lock"
 }
 
+test_spawn_primary_parent_resolution_requires_one_exact_workspace() {
+  local dir log resp fb home resolver out
+  dir="$TMP_ROOT/spawn-primary-parent"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; home="$dir/home"; mkdir -p "$home"; : > "$log"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"other"},{"workspace_id":"w2","label":"firstmate"}]}}\n' > "$resp/3.out"
+  cp "$resp/3.out" "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
+      . "$0/bin/backends/herdr.sh"
+      eval "$FM_SPAWN_PARENT_RESOLVER"
+      spawn_herdr_parent_resolve fmtest "$1"
+      printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
+    ' "$ROOT" "$home")
+  [ "$out" = $'firstmate\t' ] || fail "duplicate primary labels selected an unrelated parent: '$out'"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
+      . "$0/bin/backends/herdr.sh"
+      eval "$FM_SPAWN_PARENT_RESOLVER"
+      spawn_herdr_parent_resolve fmtest "$1"
+      printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
+    ' "$ROOT" "$home")
+  [ "$out" = $'firstmate\t' ] || fail "an absent primary label selected an unrelated parent: '$out'"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_SPAWN_PARENT_RESOLVER="$resolver" bash -c '
+      . "$0/bin/backends/herdr.sh"
+      eval "$FM_SPAWN_PARENT_RESOLVER"
+      spawn_herdr_parent_resolve fmtest "$1"
+      printf "%s\t%s" "$HERDR_PARENT_LABEL" "$HERDR_PARENT_WORKSPACE_ID"
+    ' "$ROOT" "$home")
+  [ "$out" = $'firstmate\tw2' ] || fail "one exact primary label did not resolve its workspace: '$out'"
+  pass "fm-spawn: primary presentation requires exactly one matching parent workspace"
+}
+
 # --- list_live: scoped to this home's own workspace only ---------------------
 
 test_list_live_scoped_to_this_homes_workspace_only() {
@@ -3293,6 +3330,7 @@ test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed
 test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable
 test_workspace_ensure_drops_recovered_seed_authority_for_live_agent
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
+test_spawn_primary_parent_resolution_requires_one_exact_workspace
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
 test_normalize_key
