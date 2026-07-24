@@ -501,7 +501,12 @@ fm_backend_herdr_workspace_legacy_exact_id() {  # <session> <workspace-list-json
   local session=$1 workspaces=$2 state key legacy_incarnation id record version home bound_session bound_incarnation workspace matches="" count
   state=$(fm_backend_herdr_workspace_state_dir) || return 2
   key=$(fm_backend_herdr_workspace_session_key "$session") || return 2
-  legacy_incarnation=$(fm_backend_herdr_legacy_session_incarnation "$session") || return 1
+  if [ -e "$state/$FM_BACKEND_HERDR_LEGACY_WORKSPACE_RECOVERY-$key" ] \
+     || [ -L "$state/$FM_BACKEND_HERDR_LEGACY_WORKSPACE_RECOVERY-$key" ] \
+     || [ -e "$state/$FM_BACKEND_HERDR_LEGACY_WORKSPACE_BINDING-$key" ] \
+     || [ -L "$state/$FM_BACKEND_HERDR_LEGACY_WORKSPACE_BINDING-$key" ]; then
+    legacy_incarnation=$(fm_backend_herdr_legacy_session_incarnation "$session") || return 1
+  fi
   id=$(fm_backend_herdr_secondmate_id) || return 2
   for record in \
     "$state/$FM_BACKEND_HERDR_LEGACY_WORKSPACE_RECOVERY-$key" \
