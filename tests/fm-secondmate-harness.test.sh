@@ -14,7 +14,7 @@
 #      explicit per-spawn harness arg still wins.
 #   B) Inheritance. The primary pushes a declared, extensible set of LOCAL
 #      (gitignored) config items - config/crew-dispatch.json, config/crew-harness,
-#      config/backlog-backend, and config/herdr-presentation-spaces - down into
+#      config/backlog-backend, config/herdr-presentation-spaces, and Pi-only config/calm - down into
 #      each secondmate home's config/, so the secondmate's OWN crewmates,
 #      dispatch profiles, backlog backend, and Herdr presentation opt-in inherit
 #      the primary's settings. It is primary-authoritative (re-pushed at
@@ -135,6 +135,7 @@ test_propagate_lib() {
   printf 'codex\n' > "$src/crew-harness"
   printf 'manual\n' > "$src/backlog-backend"
   : > "$src/herdr-presentation-spaces"
+  printf 'on\n' > "$src/calm"
   stdout="$d/clean-copy.out"
   stderr="$d/clean-copy.err"
   propagate_inheritable_config "$src" "$dest" >"$stdout" 2>"$stderr" || fail "propagate returned non-zero"
@@ -144,6 +145,8 @@ test_propagate_lib() {
   [ "$(cat "$dest/crew-harness")" = codex ] || fail "crew-harness not propagated"
   [ "$(cat "$dest/backlog-backend")" = manual ] || fail "backlog-backend not propagated"
   [ -f "$dest/herdr-presentation-spaces" ] || fail "herdr-presentation-spaces not propagated"
+  [ "$(cat "$dest/calm")" = on ] || fail "calm=on not propagated"
+  [ "$(fm_inherit_file_mode "$dest/calm")" = 444 ] || fail "calm destination is not read-only"
 
   # 2. idempotent: an unchanged re-run does not churn the mtime
   m1=$(date -r "$dest/crew-harness" +%s 2>/dev/null || stat -c %Y "$dest/crew-harness")
@@ -160,10 +163,12 @@ test_propagate_lib() {
   printf '{"default":{"harness":"claude"}}\n' > "$src/crew-dispatch.json"
   printf 'claude\n' > "$src/crew-harness"
   printf 'tasks-axi\n' > "$src/backlog-backend"
+  printf 'off\n' > "$src/calm"
   propagate_inheritable_config "$src" "$dest"
   [ "$(cat "$dest/crew-dispatch.json")" = '{"default":{"harness":"claude"}}' ] || fail "changed dispatch profile did not converge"
   [ "$(cat "$dest/crew-harness")" = claude ] || fail "changed value did not converge"
   [ "$(cat "$dest/backlog-backend")" = tasks-axi ] || fail "changed backlog backend did not converge"
+  [ "$(cat "$dest/calm")" = off ] || fail "calm=off did not converge"
 
   outside="$d/outside-target"
   rm -f "$dest/crew-harness" "$outside"
@@ -176,12 +181,13 @@ test_propagate_lib() {
   [ "$(cat "$outside")" = outside ] || fail "destination symlink target was overwritten"
 
   # 4. removing the source mirrors absence downstream (primary-authoritative)
-  rm -f "$src/crew-dispatch.json" "$src/crew-harness" "$src/backlog-backend" "$src/herdr-presentation-spaces"
+  rm -f "$src/crew-dispatch.json" "$src/crew-harness" "$src/backlog-backend" "$src/herdr-presentation-spaces" "$src/calm"
   propagate_inheritable_config "$src" "$dest"
   [ -e "$dest/crew-dispatch.json" ] && fail "dispatch profile absence not mirrored downstream"
   [ -e "$dest/crew-harness" ] && fail "absence not mirrored downstream"
   [ -e "$dest/backlog-backend" ] && fail "backlog-backend absence not mirrored downstream"
   [ -e "$dest/herdr-presentation-spaces" ] && fail "herdr-presentation-spaces absence not mirrored downstream"
+  [ -e "$dest/calm" ] && fail "calm absence not mirrored downstream"
 
   rm -f "$dest/crew-harness"
   ln -s "$d/missing-target" "$dest/crew-harness"
@@ -235,6 +241,43 @@ test_propagate_lib() {
   assert_contains "$err_text" "fm-config-inherit: warning: skipped crew-dispatch.json" \
     "guard skip did not emit a stderr warning"
   [ ! -e "$guard_repo/config/crew-dispatch.json" ] || fail "guard skip still copied the unignored item"
+
+  # 8. Calm rejects symlinks and hardlinks, quarantines drift, restores
+  # read-only mode, and treats invalid primary content as absence (Pi defaults off).
+  rm -rf "$d/calm-src" "$d/calm-dest"
+  mkdir -p "$d/calm-src" "$d/calm-dest"
+  printf 'on\n' > "$d/calm-src/calm"
+  printf 'off\n' > "$d/calm-dest/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "calm convergence failed"
+  [ "$(cat "$d/calm-dest/calm")" = on ] || fail "calm did not converge to on"
+  [ "$(fm_inherit_file_mode "$d/calm-dest/calm")" = 444 ] || fail "calm did not restore read-only mode"
+  find "$d/calm-dest" -name '.calm.quarantine.*' | grep -q . || fail "calm drift was not quarantined"
+  chmod 0644 "$d/calm-dest/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "calm readonly restoration failed"
+  [ "$(fm_inherit_file_mode "$d/calm-dest/calm")" = 444 ] || fail "unchanged calm did not restore read-only mode"
+  printf 'invalid\n' > "$d/calm-src/calm"
+  propagate_inheritable_config "$d/calm-src" "$d/calm-dest" || fail "invalid calm source did not converge"
+  [ ! -e "$d/calm-dest/calm" ] || fail "invalid calm source did not converge to absence"
+  printf 'on\n' > "$d/calm-src/calm"
+  ln -s "$d/outside-target" "$d/calm-src/calm-link"
+  mv "$d/calm-src/calm" "$d/calm-src/calm-real"
+  ln -s "$d/calm-src/calm-real" "$d/calm-src/calm"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm symlink source was accepted"
+  fi
+  rm -f "$d/calm-src/calm" "$d/calm-src/calm-link"
+  mv "$d/calm-src/calm-real" "$d/calm-src/calm"
+  ln -s "$d/outside-target" "$d/calm-dest/calm"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm symlink destination was accepted"
+  fi
+  rm -f "$d/calm-dest/calm"
+  printf 'off\n' > "$d/calm-dest/calm"
+  ln "$d/calm-dest/calm" "$d/calm-dest/calm-link"
+  if propagate_inheritable_config "$d/calm-src" "$d/calm-dest" 2>"$stderr"; then
+    fail "calm hardlinked destination was accepted"
+  fi
+  rm -f "$d/calm-dest/calm" "$d/calm-dest/calm-link"
 
   pass "B1 propagate_inheritable_config: copy, idempotence, convergence, absence-mirror, exclusion, no-op, skip diagnostics"
 }
@@ -702,7 +745,7 @@ new_world() {
   {
     printf 'projects/\nstate/\ndata/\n.no-mistakes/\n'
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
-    printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\n'
+    printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\nconfig/calm\n'
   } > "$w/main/.gitignore"
   printf 'v1\n' > "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
@@ -1228,12 +1271,14 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   # alpha is stale on harness + backlog; beta is stale on multiline dispatch only.
   printf 'pi\n' > "$w/alpha/config/crew-harness"
   printf 'tasks-axi\n' > "$w/alpha/config/backlog-backend"
+  printf 'off\n' > "$w/alpha/config/calm"
   printf '{"default":{"harness":"old"}}\n' > "$w/beta/config/crew-dispatch.json"
 
   multiline_json=$(printf '{\n  "default": {\n    "harness": "grok",\n    "model": "grok-4.5"\n  },\n  "rules": [\n    {"when": "news", "use": {"harness": "grok"}}\n  ]\n}\n')
   printf '%s' "$multiline_json" > "$w/home/config/crew-dispatch.json"
   printf 'codex\n' > "$w/home/config/crew-harness"
   printf 'manual\n' > "$w/home/config/backlog-backend"
+  printf 'on\n' > "$w/home/config/calm"
   {
     shared_captain_header_for_tests
     printf '%s\n' "shared secret preference body that must never appear in a config reread"
@@ -1252,6 +1297,8 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
     || fail "beta did not receive multiline dispatch"
   [ "$(cat "$w/alpha/config/crew-harness")" = codex ] || fail "alpha harness not updated"
   [ "$(cat "$w/alpha/config/backlog-backend")" = manual ] || fail "alpha backlog-backend not updated"
+  [ "$(cat "$w/alpha/config/calm")" = on ] || fail "alpha Calm preference not updated"
+  [ "$(fm_inherit_file_mode "$w/alpha/config/calm")" = 444 ] || fail "alpha Calm preference is not read-only"
 
   instr_a=$(reread_instruction_path "$w/alpha") || fail "alpha instruction missing after config push"
   instr_b=$(reread_instruction_path "$w/beta") || fail "beta instruction missing after config push"
@@ -1267,13 +1314,15 @@ test_config_reread_per_home_changed_sets_and_exact_bytes() {
   assert_contains "$(cat "$instr_a")" "config/crew-dispatch.json" "alpha missing dispatch path"
   assert_contains "$(cat "$instr_a")" "config/crew-harness" "alpha missing harness path"
   assert_contains "$(cat "$instr_a")" "config/backlog-backend" "alpha missing backlog path"
+  assert_contains "$(cat "$instr_a")" "config/calm" "alpha missing Calm path"
   # Path order follows FM_INHERITABLE_CONFIG.
   awk '
     /config\/crew-dispatch\.json/ { d=NR }
     /config\/crew-harness/ { h=NR }
     /config\/backlog-backend/ { b=NR }
+    /config\/calm/ { c=NR }
     END {
-      if (!(d && h && b && d < h && h < b)) exit 1
+      if (!(d && h && b && c && d < h && h < b && b < c)) exit 1
     }
   ' "$instr_a" || fail "alpha instruction path order is not deterministic allowlist order"
 

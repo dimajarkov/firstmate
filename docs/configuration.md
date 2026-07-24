@@ -29,7 +29,11 @@ The Pi Calm extension stores the captain's home-local presentation choice in git
 The only values it writes are `on` and `off`, each followed by one newline; an absent, unreadable, or unrecognized value defaults to off.
 The `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
-This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+The primary-authoritative secondmate inheritance contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), including its allowlist, safe convergence, quarantine, and generation delivery rules.
+Only `on` and `off` primary values, after surrounding whitespace is stripped, propagate as canonical values.
+An absent or invalid primary value removes the secondmate copy, which Calm interprets as off, so secondmates cannot retain stale presentation settings.
+The inherited file is harmless to Claude, Codex, OpenCode, and Grok because none reads it.
+A mid-session config push persists the preference and asks the secondmate to reread its configuration, but does not claim to change a running Pi transcript: Pi has no supported external extension reload or toggle API for this path, so the preference takes effect when Pi next starts a session.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
@@ -275,7 +279,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `herdr-presentation-spaces`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `herdr-presentation-spaces`, `calm`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
 When an allowlisted config item changes for an already-running home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 The locked bootstrap inheritance pass uses the same per-home changed-set and reread path for already-running homes; see `secondmate-provisioning` for the single contract owner.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.

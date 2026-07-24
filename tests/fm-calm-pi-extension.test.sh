@@ -2,6 +2,8 @@
 # Focused rendering, lifecycle, persistence, and interactive TUI checks for /calm.
 set -u
 
+export NODE_NO_WARNINGS=1
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -16,6 +18,14 @@ PI_OPERATIONAL_INPUT="$ROOT/.pi/extensions/lib/fm-operational-input.ts"
 PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
 TMUX_SOCKET="fm-calm-$$"
 TMUX_SESSION="fm-calm-e2e"
+
+require_supported_pi_calm_version() {
+  local version=$1
+  case "$version" in
+    0.81.1|0.82.0) ;;
+    *) fail "Pi Calm compatibility assumptions require Pi 0.81.1 or 0.82.0, found $version" ;;
+  esac
+}
 
 cleanup() {
   if command -v tmux >/dev/null 2>&1; then
@@ -126,7 +136,7 @@ test_home_resolution() {
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
-  [ "$version" = "0.81.1" ] || fail "Pi calm compatibility assumptions require Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   fixture="$TMP_ROOT/home-resolution"
   mkdir -p \
@@ -235,7 +245,7 @@ test_rendering_and_session_lifecycle() {
     return 0
   fi
   version=$(node -p "require('$PI_PACKAGE_DIR/package.json').version")
-  [ "$version" = "0.81.1" ] || fail "Pi calm compatibility assumptions require Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   fixture="$TMP_ROOT/renderer"
   mkdir -p "$fixture/home" "$fixture/lib" "$fixture/node_modules/@earendil-works"
@@ -886,7 +896,7 @@ test_operational_followup_turn_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi operational follow-up E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/followup-project"
   home="$TMP_ROOT/followup-home"
@@ -1239,7 +1249,7 @@ test_hidden_block_geometry_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi Calm hidden-block geometry E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/geometry-project"
   home="$TMP_ROOT/geometry-home"
@@ -1479,7 +1489,7 @@ test_interactive_terminal_e2e() {
     return 0
   fi
   version=$(pi --version 2>/dev/null || true)
-  [ "$version" = "0.81.1" ] || fail "Pi calm interactive E2E requires Pi 0.81.1, found $version"
+  require_supported_pi_calm_version "$version"
 
   project="$TMP_ROOT/e2e-project"
   config="$TMP_ROOT/e2e-config"

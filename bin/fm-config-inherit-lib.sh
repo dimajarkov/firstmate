@@ -6,7 +6,8 @@
 # profile rules, primary config/crew-harness=codex makes a secondmate's crewmates
 # spawn on codex too, primary config/backlog-backend=manual makes that home
 # hand-edit backlog files too, and primary config/herdr-presentation-spaces
-# enables the same default-off Herdr presentation projection). It also pushes
+# enables the same default-off Herdr presentation projection, and primary
+# config/calm carries Pi-only Calm transcript presentation). It also pushes
 # the one primary-authoritative shared captain-preference file,
 # data/captain-shared.md, into each secondmate home's data/ as a read-only copy.
 #
@@ -23,6 +24,8 @@
 # After successful config/* changes under an already-running secondmate, callers
 # invoke fm_config_send_reread_nudge so the live agent re-reads exact post-write
 # bytes (spawn/respawn already re-reads at launch and needs no redundant nudge).
+# For Pi-only config/calm, that message persists the next-session preference and
+# must not claim an unsupported live extension reload or presentation toggle.
 #
 # Extensible by design: FM_INHERITABLE_CONFIG is the single declared list of
 # config-dir-relative items the primary propagates. Add an item there and every
@@ -40,7 +43,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend herdr-presentation-spaces}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-harness backlog-backend herdr-presentation-spaces calm}"
 
 fm_inherit_file_mode() {
   if [ "$(uname)" = Darwin ]; then
@@ -388,6 +391,187 @@ propagate_secondmate_inheritance() {
   return "$rc"
 }
 
+# config/calm is Pi-only presentation preference, but it travels through the
+# same allowlist and convergence path as the other inherited config items. The
+# primary accepts only on/off after surrounding whitespace. Absent or invalid
+# source state converges the secondmate to absence, which Pi interprets as off.
+# Unlike ordinary inherited defaults, this captain-owned presentation preference
+# is read-only in a secondmate home and rejects unsafe source/destination files.
+FM_CALM_MODE="444"
+
+calm_preference_value() {
+  local path=$1 value
+  [ -f "$path" ] && [ ! -L "$path" ] || return 2
+  [ "$(fm_inherit_file_link_count "$path")" = 1 ] || return 2
+  value=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$path" 2>/dev/null) || return 2
+  case "$value" in
+    on|off) printf '%s\n' "$value"; return 0 ;;
+    *) return 3 ;;
+  esac
+}
+
+calm_destination_safe() {
+  local path=$1
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  [ "$(fm_inherit_file_link_count "$path")" = 1 ]
+}
+
+calm_canonical_sha256() {
+  local value=$1
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s\n' "$value" | shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n' "$value" | sha256sum | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+calm_quarantine_name() {
+  local parent=$1 hash=$2 stamp base candidate n
+  stamp=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null) || return 1
+  base="$parent/.calm.quarantine.$stamp.$hash"
+  candidate=$base
+  n=0
+  while [ -e "$candidate" ] || [ -L "$candidate" ]; do
+    n=$((n + 1))
+    candidate="$base.$n"
+  done
+  printf '%s\n' "$candidate"
+}
+
+calm_quarantine_destination() {
+  local dest=$1 parent=$2 hash artifact
+  calm_destination_safe "$dest" || return 1
+  hash=$(fm_inherit_sha256 "$dest") || return 1
+  artifact=$(calm_quarantine_name "$parent" "$hash") || return 1
+  chmod u+w "$dest" 2>/dev/null || return 1
+  if mv -f -- "$dest" "$artifact" 2>/dev/null; then
+    chmod 0600 "$artifact" 2>/dev/null || return 1
+    calm_destination_safe "$artifact" || return 1
+    printf '%s\n' "$artifact"
+    return 0
+  fi
+  chmod "$FM_CALM_MODE" "$dest" 2>/dev/null || true
+  return 1
+}
+
+calm_write_destination() {
+  local value=$1 dest=$2 parent tmp
+  parent=${dest%/*}
+  [ -d "$parent" ] && [ ! -L "$parent" ] || mkdir -p "$parent" 2>/dev/null || return 1
+  [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+  tmp=$(umask 077; mktemp "$parent/.fm-calm.XXXXXX" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$value" > "$tmp" || ! chmod "$FM_CALM_MODE" "$tmp" 2>/dev/null || ! mv -f -- "$tmp" "$dest" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  calm_destination_safe "$dest" && [ "$(fm_inherit_file_mode "$dest")" = "$FM_CALM_MODE" ]
+}
+
+propagate_calm_preference() {
+  local src_config=$1 dest_config=$2
+  local src="$src_config/calm" dest="$dest_config/calm"
+  local source_value source_rc dest_hash expected_hash parent quarantine reason
+  parent=${dest%/*}
+
+  if [ -e "$src" ] || [ -L "$src" ]; then
+    source_value=$(calm_preference_value "$src"); source_rc=$?
+    if [ "$source_rc" -eq 2 ]; then
+      reason="unsafe primary source"
+      warn_inheritable_config_error calm "$src" "$reason"
+      record_inheritable_config_result calm error "$reason"
+      return 1
+    fi
+  else
+    source_rc=1
+  fi
+
+  # A fully absent source and destination is a true no-op. Do not ask the
+  # gitignore guard about an item that would not be written or removed.
+  if [ "$source_rc" -ne 0 ] && [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+    record_inheritable_config_result calm unchanged ""
+    return 0
+  fi
+  if ! destination_allows_inherited_item "$dest_config" calm; then
+    reason=$(inheritable_config_skip_reason)
+    warn_inheritable_config_skip calm "$dest_config" "$reason"
+    record_inheritable_config_result calm skipped "$reason"
+    return 0
+  fi
+
+  if [ "$source_rc" -eq 0 ]; then
+    expected_hash=$(calm_canonical_sha256 "$source_value") || {
+      reason="failed to hash canonical primary value"
+      warn_inheritable_config_error calm "$src" "$reason"
+      record_inheritable_config_result calm error "$reason"
+      return 1
+    }
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+      if ! calm_destination_safe "$dest"; then
+        reason="unsafe destination"
+        warn_inheritable_config_error calm "$dest" "$reason"
+        record_inheritable_config_result calm error "$reason"
+        return 1
+      fi
+      dest_hash=$(fm_inherit_sha256 "$dest") || {
+        reason="failed to hash destination"
+        warn_inheritable_config_error calm "$dest" "$reason"
+        record_inheritable_config_result calm error "$reason"
+        return 1
+      }
+      if [ "$dest_hash" = "$expected_hash" ]; then
+        if chmod "$FM_CALM_MODE" "$dest" 2>/dev/null; then
+          record_inheritable_config_result calm unchanged ""
+          return 0
+        fi
+        reason="failed to restore read-only mode"
+        warn_inheritable_config_error calm "$dest" "$reason"
+        record_inheritable_config_result calm error "$reason"
+        return 1
+      fi
+      quarantine=$(calm_quarantine_destination "$dest" "$parent") || {
+        reason="failed to quarantine divergent destination"
+        warn_inheritable_config_error calm "$dest" "$reason"
+        record_inheritable_config_result calm error "$reason"
+        return 1
+      }
+      printf 'SECONDMATE_SYNC: secondmate home %s: quarantined config/calm drift at %s\n' "${dest_config%/config}" "$quarantine"
+    fi
+    if calm_write_destination "$source_value" "$dest"; then
+      record_inheritable_config_result calm pushed "${quarantine:+quarantined local drift at $quarantine}"
+      return 0
+    fi
+    reason="failed to write canonical preference"
+  elif [ -e "$dest" ] || [ -L "$dest" ]; then
+    if ! calm_destination_safe "$dest"; then
+      reason="unsafe destination"
+      warn_inheritable_config_error calm "$dest" "$reason"
+      record_inheritable_config_result calm error "$reason"
+      return 1
+    fi
+    quarantine=$(calm_quarantine_destination "$dest" "$parent") || {
+      reason="failed to quarantine destination before mirroring primary absence"
+      warn_inheritable_config_error calm "$dest" "$reason"
+      record_inheritable_config_result calm error "$reason"
+      return 1
+    }
+    printf 'SECONDMATE_SYNC: secondmate home %s: quarantined config/calm drift at %s\n' "${dest_config%/config}" "$quarantine"
+    if [ "$source_rc" -eq 3 ]; then
+      record_inheritable_config_result calm pushed "mirrored invalid primary value as absence after quarantining local copy at $quarantine"
+    else
+      record_inheritable_config_result calm pushed "mirrored primary absence after quarantining local copy at $quarantine"
+    fi
+    return 0
+  else
+    record_inheritable_config_result calm unchanged ""
+    return 0
+  fi
+  warn_inheritable_config_error calm "$dest" "$reason"
+  record_inheritable_config_result calm error "$reason"
+  return 1
+}
+
 propagate_inheritable_config() {
   local src_config=$1 dest_config=$2 item src dest reason rc
   [ -n "$src_config" ] || return 1
@@ -397,6 +581,10 @@ propagate_inheritable_config() {
     case "$item" in
       ''|/*|.|..|../*|*/../*|*/..) return 1 ;;
     esac
+    if [ "$item" = calm ]; then
+      propagate_calm_preference "$src_config" "$dest_config" || rc=1
+      continue
+    fi
     src="$src_config/$item"
     dest="$dest_config/$item"
     if [ -f "$src" ]; then

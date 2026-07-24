@@ -3,7 +3,7 @@
 # Usage: fm-config-push.sh [--help]
 #
 # Mid-session convergence for inherited local material such as
-# config/crew-dispatch.json edits or data/captain-shared.md updates. This
+# config/crew-dispatch.json edits, config/calm presentation preference changes, or data/captain-shared.md updates. This
 # discovers live secondmate homes from state/*.meta, backfills
 # home= from data/secondmates.md for older meta records, and reuses the same
 # propagation machinery as bootstrap, but deliberately does not
@@ -11,7 +11,8 @@
 # After a successful per-home propagation that changes any allowlisted config/*
 # item, writes a generation-specific literal-content reread instruction and
 # sends its pointer to that live secondmate via fm-config-inherit-lib.sh
-# (fm_config_send_reread_nudge).
+# (fm_config_send_reread_nudge). A Calm update is persisted for the next Pi
+# session; this path does not claim an unsupported live presentation reload.
 # Unchanged config and data/captain-shared.md-only updates send no reread
 # message unless a previous send failure is pending for that home.
 # Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
