@@ -129,7 +129,7 @@ Herdr enforces NO label uniqueness at all for either workspaces or tabs (re-veri
 Secondmate homes therefore persist their exact workspace id and durable marker id in the home-local `state/.herdr-workspace` binding instead of selecting by the suffix-stripped display label.
 Homes `foo` and `foo-secondmate` can both display as `2🏴‍☠️-foo` while every default spawn, recovery, list-live, and presentation-parent path remains scoped to its own exact workspace id.
 An in-home resolved `state` directory symlink remains supported, while a broken, non-directory, or out-of-home target fails closed before workspace creation.
-If exact cleanup after a late binding-publication failure cannot verify removal of the response-created workspace, `state/.herdr-workspace-recovery` retains its exact workspace and seeded-tab ids so the next lookup adopts it instead of creating another and can still prune the safely revalidated default tab.
+If exact cleanup after a late binding-publication failure cannot verify removal of the response-created workspace, `state/.herdr-workspace-recovery` retains its exact workspace and seeded-tab ids so the next lookup adopts it instead of creating another and can still prune the safely revalidated, agent-free default tab.
 The primary home's established `firstmate` label lookup remains unchanged.
 
 ### No forced migration
@@ -291,6 +291,7 @@ Use a distinct name such as `$want` instead; `tests/fm-backend-herdr.test.sh` gr
 An ordinary adopted workspace's caller passes an empty 4th argument, so create_task never even looks for a prune candidate in that case - it is structurally impossible for an unrelated adopted workspace's tabs to be pruned, regardless of how they are labeled.
 
 Defense in depth on top of that gate (not the primary safety mechanism): before closing the seeded tab, `fm_backend_herdr_workspace_prune_seeded_default_tab` re-verifies the tab is still present, re-checks it is still labeled `1`, and refuses if its pane's `agent get` reports `agent_status: working` (herdr's own native agent-state detection) - belt-and-suspenders against a live agent having landed there through some other path.
+Durable recovery carries seeded-tab prune authority forward only when the exact recovered pane is still positively classified as agent-free; any registered agent status revokes that authority.
 
 #### Incident: the 2026-07-02 self-kill
 

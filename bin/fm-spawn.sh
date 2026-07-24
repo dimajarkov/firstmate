@@ -341,11 +341,6 @@ spawn_herdr_parent_resolve() {
   HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label)
   HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
   if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
-    FM_HOME="$home" fm_backend_herdr_workspace_binding_publish \
-      "$session" "$HERDR_PARENT_WORKSPACE_ID" || {
-        HERDR_PARENT_WORKSPACE_ID=""
-        return 1
-      }
     HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id \
       "$session" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")
   fi
@@ -1029,11 +1024,11 @@ case "$BACKEND" in
     if [ "$HERDR_PROJECTED" -ne 1 ]; then
       HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
-      # (the second field empty when this call ADOPTED a pre-existing workspace
-      # rather than creating a fresh one). Split on the guaranteed single tab
-      # character; the seeded tab id is threaded through to create_task
-      # untouched, which is the only function permitted to prune it (never
-      # re-derived from labels - see docs/herdr-backend.md "Default-tab prune").
+      # (the second field is populated only by fresh or safely recovered
+      # response authority). Split on the guaranteed single tab character;
+      # the seeded tab id is threaded through to create_task untouched, which
+      # is the only function permitted to prune it (never re-derived from
+      # labels - see docs/herdr-backend.md "Default-tab prune").
       CONTAINER=${HERDR_CONTAINER_RAW%%$'\t'*}
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
