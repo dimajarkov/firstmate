@@ -25,17 +25,16 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 
 ## Pi Calm preference (config/calm)
 
-The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
+The Pi Calm extension reads gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
+In a primary home, it stores the captain's presentation choice there; in a secondmate home, the file is inherited from the primary.
 The only values it writes are `on` and `off`, each followed by one newline; an absent, unreadable, or unrecognized value defaults to off.
 In a primary home, the `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
 In a marked secondmate home, `/calm` refuses the local override and explains that the primary Firstmate manages the preference.
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
-The primary-authoritative secondmate inheritance contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), including its allowlist, safe convergence, quarantine, and generation delivery rules.
-Only `on` and `off` primary values, after surrounding whitespace is stripped, propagate as canonical values.
-An absent or invalid primary value removes the secondmate copy, which Calm interprets as off, so secondmates cannot retain stale presentation settings.
-The inherited file is harmless to Claude, Codex, OpenCode, and Grok because none reads it.
-A mid-session config push sends Calm-specific framing only to a live secondmate whose metadata records `harness=pi`; Claude, Codex, OpenCode, and Grok homes receive no Calm instruction.
-The Pi notice states that persistence does not change the running transcript because Pi has no supported external extension reload or toggle API for this path, so the preference takes effect when Pi next starts a session.
+The primary home's choice is authoritative for secondmate homes; an absent or invalid primary value leaves Calm off downstream.
+A mid-session inherited change does not alter the running transcript and takes effect when the next Pi session starts.
+Claude, Codex, OpenCode, and Grok do not act on the inherited file.
+The [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) skill owns the propagation allowlist, validation, convergence, quarantine, harness-gated notification, and generation-delivery mechanics.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
@@ -276,13 +275,13 @@ A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
 The locked session-start bootstrap step also runs the guarded local secondmate sync for recorded live secondmate homes, then propagates declared inherited local material into each validated live home.
-It emits `SECONDMATE_SYNC:` only when a home was skipped for an actionable sync reason, inheritance failed, or a divergent shared captain-preference copy was quarantined.
+It emits `SECONDMATE_SYNC:` only when a home was skipped for an actionable sync reason, inheritance failed, or a divergent inherited copy was quarantined.
 When a running home advances and its loaded instruction surface (`AGENTS.md`, `bin/`, or `.agents/skills/`) changed, bootstrap sends the re-read nudge itself through the stable `fm-<id>` selector and reports the exact completed send as `BOOTSTRAP_INFO:`.
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
 It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `herdr-presentation-spaces`, `calm`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
-When an allowlisted config item changes for an already-running home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
+Applicable changes for an already-running home send the literal-content pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); a Calm-only change sends one only to Pi, while unchanged applicable config sends none unless a previous delivery is pending.
 The locked bootstrap inheritance pass uses the same per-home changed-set and reread path for already-running homes; see `secondmate-provisioning` for the single contract owner.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.

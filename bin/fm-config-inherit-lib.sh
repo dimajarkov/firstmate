@@ -807,12 +807,13 @@ fm_config_reread_save_retry_report() {
 
 # fm_config_write_reread_instruction <dest-home> <report> <instruction-path> [harness]
 # After successful propagation, write one instruction from the validated
-# destination state. Includes only changed allowlisted config files, each with
-# relative path, begin/end delimiters, and either the destination file's full
-# exact post-write bytes (streamed unparsed) or the literal token ABSENT when
-# the destination copy was removed. Returns 1 when no allowlisted config item
-# changed (or on write failure). Never inlines data/captain-shared.md, SHA
-# values, selected profiles, or any generated interpretation.
+# destination state. Includes only changed config items deliverable to this
+# harness, each with relative path, begin/end delimiters, and either the
+# destination file's full exact post-write bytes (streamed unparsed) or the
+# literal token ABSENT when the destination copy was removed. Returns 1 when no
+# changed item is deliverable (or on write failure). Never inlines
+# data/captain-shared.md, SHA values, selected profiles, or any generated
+# interpretation.
 fm_config_write_reread_instruction() {
   local dest_home=$1 report=$2 instruction_path=$3 harness=${4:-}
   local item rel dest parent tmp first=1 changed_items framing
@@ -1352,15 +1353,15 @@ fm_config_reread_quarantine_pending() {
 }
 
 # fm_config_send_reread_nudge <id> <dest-home> <report> [harness]
-# After successful propagation, if any allowlisted config item changed for this
-# home, write the exact-byte instruction under the destination home and send a
-# single-line pointers to those files through the routed secondmate path
-# (fm-send). The files contain only changed config paths, clear delimiters, and
-# the destination's full exact post-write bytes (or ABSENT) - never summaries,
-# SHA values, selected profiles, or data/captain-shared.md. No-op (return 0) when
-# nothing changed and no pending delivery exists. On publication or send
-# failure, print a concrete CONFIG_REREAD retry diagnostic to stdout and return
-# non-zero - never claim the live agent reread the values.
+# After successful propagation, if any config change is deliverable to this
+# harness, write the exact-byte instruction under the destination home and send
+# a single-line pointer through the routed secondmate path (fm-send). The files
+# contain only changed config paths, clear delimiters, and the destination's
+# full exact post-write bytes (or ABSENT) - never summaries, SHA values,
+# selected profiles, or data/captain-shared.md. No-op (return 0) when nothing is
+# deliverable and no pending delivery exists. On publication or send failure,
+# print a concrete CONFIG_REREAD retry diagnostic to stdout and return non-zero
+# - never claim the live agent reread the values.
 fm_config_send_reread_nudge() {
   local id=$1 dest_home=$2 report=$3 harness=${4:-}
   local dest_home_abs state source_home_abs changed_items pending_paths stage_paths delivery_paths

@@ -13,8 +13,8 @@
 # sends its pointer to that live secondmate via fm-config-inherit-lib.sh
 # (fm_config_send_reread_nudge). A Calm update joins that generation only for a
 # live Pi secondmate and states the next-session presentation boundary.
-# Unchanged config and data/captain-shared.md-only updates send no reread
-# message unless a previous send failure is pending for that home.
+# Changes not applicable to the live harness and data/captain-shared.md-only
+# updates send no reread message unless a previous deliverable failure is pending.
 # Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
 set -u
 

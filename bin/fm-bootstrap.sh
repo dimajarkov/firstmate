@@ -32,7 +32,7 @@
 #          into each validated live secondmate home.
 #          SECONDMATE_SYNC lines report actionable skipped local-HEAD syncs or
 #          inheritance failures for live secondmate homes, plus quarantine
-#          diagnostics for divergent shared captain-preference copies;
+#          diagnostics for divergent inherited copies;
 #          no-op/current and successful updates stay quiet.
 #          SECONDMATE_LIVENESS lines report only actionable failures from the
 #          recovery-grade state owned by bin/fm-backend.sh's
@@ -339,10 +339,10 @@ secondmate_sync() {
   # surface into every VALIDATED live secondmate home swept above.
   # FF_SEEN_HOMES is exactly that set, and fm-config-inherit-lib.sh owns the
   # declared config items plus data/captain-shared.md.
-  # After a successful push that changes allowlisted config/* for an already-
-  # running home, send its literal-content reread instruction pointer so the
-  # live agent does not keep applying stale defaults. Spawn/respawn already
-  # re-reads at launch and needs no redundant nudge unless files changed after launch.
+  # After a successful push with changes applicable to an already-running
+  # home's harness, send its literal-content instruction pointer so the live
+  # agent does not keep applying stale defaults. Calm is next-session-only,
+  # while spawn/respawn reads every converged file at launch.
   local id home home_real home_lock propagated_homes report reread_out reread_skip_pending meta harness
   propagated_homes=""
   SECONDMATE_RESPAWNED_IDS=${SECONDMATE_RESPAWNED_IDS:-}

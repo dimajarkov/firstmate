@@ -6,7 +6,8 @@
 // setHiddenThinkingLabel(). The focused tests pin those assumptions. Exact-version
 // presentation adapters cover collapsed assistant thinking and operational user rows;
 // Pi still exposes no global renderer for arbitrary built-in or custom rows.
-// docs/configuration.md owns the home-local Calm preference contract.
+// docs/configuration.md owns the Calm preference schema and user behavior;
+// secondmate-provisioning owns inherited propagation mechanics.
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
