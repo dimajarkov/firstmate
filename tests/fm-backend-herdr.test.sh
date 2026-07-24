@@ -245,6 +245,19 @@ test_workspace_label_secondmate_marker_trims_whitespace() {
   pass "fm_backend_herdr_workspace_label: trims whitespace around the marker's secondmate id"
 }
 
+test_secondmate_marker_parser_is_shared_by_current_and_legacy_labels() {
+  local home id current legacy
+  home="$TMP_ROOT/secondmate-marker-parser"; mkdir -p "$home"
+  printf '  arena-crm-secondmate  \n' > "$home/.fm-secondmate-home"
+  id=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_secondmate_id' "$ROOT")
+  current=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_label' "$ROOT")
+  legacy=$(FM_HOME="$home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_legacy_label' "$ROOT")
+  [ "$id" = "arena-crm-secondmate" ] || fail "normalized marker parser returned '$id'"
+  [ "$current" = "2🏴‍☠️-arena-crm" ] || fail "current label did not use the normalized marker, got '$current'"
+  [ "$legacy" = "2ndmate-arena-crm-secondmate" ] || fail "legacy label did not use the normalized marker, got '$legacy'"
+  pass "secondmate marker parsing: current and legacy labels share one normalized durable id"
+}
+
 test_workspace_label_empty_marker_falls_back_to_primary() {
   local home
   home="$TMP_ROOT/secondmate-home-empty"; mkdir -p "$home"
@@ -606,7 +619,7 @@ test_container_ensure_creates_with_no_focus_flag() {
 test_container_ensure_uses_secondmate_home_label() {
   local dir log resp fb out home
   dir="$TMP_ROOT/container-secondmate-label"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
+  home="$TMP_ROOT/container-secondmate-home"; mkdir -p "$home/state"; printf 'sshhip-h7\n' > "$home/.fm-secondmate-home"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
   printf '{"server":{"running":true}}\n' > "$resp/2.out"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
@@ -617,6 +630,8 @@ test_container_ensure_uses_secondmate_home_label() {
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2🏴‍☠️-sshhip-h7' \
     "container_ensure did not create the workspace under this secondmate home's own label"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+    || fail "container_ensure did not publish the exact secondmate workspace binding"
   pass "fm_backend_herdr_container_ensure: creates the workspace under the SECONDMATE home's own label, not 'firstmate'"
 }
 
@@ -1567,22 +1582,25 @@ test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk() {
   pass "herdr presentation recovery: duplicate-token inspection is read-only and live-agent risk refuses fallback"
 }
 
-# --- workspace_find: scoped to THIS home's own label, not just any match ----
+# --- workspace_find: scoped to THIS home's exact operational identity -------
 
-test_workspace_find_matches_only_this_homes_own_label() {
-  local dir log resp fb out home
+test_workspace_find_uses_exact_binding_when_display_labels_collide() {
+  local dir log resp fb out home1 home2
   dir="$TMP_ROOT/find-scoped"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/find-scoped-home"; mkdir -p "$home"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
-  # A workspace list carrying BOTH the primary's "firstmate" space and this
-  # secondmate's own "2🏴‍☠️-bravo-b2" space (as would be true once several
-  # homes share one herdr session) - find must pick the one matching THIS
-  # home's own label, never the primary's or a sibling secondmate's.
-  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-bravo-b2"},{"workspace_id":"w3","label":"2🏴‍☠️-alpha-a1"}]}}\n' > "$resp/1.out"
+  home1="$TMP_ROOT/find-scoped-home-foo"; mkdir -p "$home1/state"; printf 'foo\n' > "$home1/.fm-secondmate-home"
+  home2="$TMP_ROOT/find-scoped-home-foo-secondmate"; mkdir -p "$home2/state"; printf 'foo-secondmate\n' > "$home2/.fm-secondmate-home"
+  printf 'version=1\nhome_id=foo\nsession=fmtest\nworkspace_id=w2\n' > "$home1/state/.herdr-workspace"
+  printf 'version=1\nhome_id=foo-secondmate\nsession=fmtest\nworkspace_id=w3\n' > "$home2/state/.herdr-workspace"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-foo"},{"workspace_id":"w3","label":"2🏴‍☠️-foo"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-foo"},{"workspace_id":"w3","label":"2🏴‍☠️-foo"}]}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+  out=$( PATH="$fb:$PATH" FM_HOME="$home1" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT" )
-  [ "$out" = "w2" ] || fail "workspace_find should have matched this home's own label (2🏴‍☠️-bravo-b2 -> w2), got '$out'"
-  pass "fm_backend_herdr_workspace_find: matches only THIS home's own label among several coexisting workspaces"
+  [ "$out" = "w2" ] || fail "foo should resolve its exact workspace binding, got '$out'"
+  out=$( PATH="$fb:$PATH" FM_HOME="$home2" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_find fmtest' "$ROOT" )
+  [ "$out" = "w3" ] || fail "foo-secondmate should resolve its exact workspace binding, got '$out'"
+  pass "fm_backend_herdr_workspace_find: suffix-colliding homes stay isolated by exact workspace binding"
 }
 
 test_workspace_find_adopts_one_legacy_label_only() {
@@ -1597,12 +1615,47 @@ test_workspace_find_adopts_one_legacy_label_only() {
   pass "fm_backend_herdr_workspace_find: adopts one legacy workspace without renaming it"
 }
 
+test_workspace_ensure_binds_legacy_workspace_without_renaming() {
+  local dir log resp fb out home
+  dir="$TMP_ROOT/ensure-legacy"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/ensure-legacy-home"; mkdir -p "$home/state"; printf 'legacy-secondmate\n' > "$home/.fm-secondmate-home"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"2ndmate-legacy-secondmate"}]}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_ensure fmtest /tmp' "$ROOT")
+  [ "$out" = "w1" ] || fail "workspace_ensure should retain the legacy workspace, got '$out'"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w1 ] \
+    || fail "workspace_ensure did not bind the adopted legacy workspace exactly"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''rename' "legacy adoption renamed the workspace"
+  assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "legacy adoption created a replacement workspace"
+  pass "fm_backend_herdr_workspace_ensure: legacy workspace adoption publishes an exact binding without migration"
+}
+
+test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
+  local source recovery_ensure recovery_lock recovery_resolve fresh_ensure fresh_lock fresh_resolve
+  source=$(cat "$ROOT/bin/fm-spawn.sh")
+  [ "$(printf '%s' "$source" | grep -Fc 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"')" -eq 2 ] \
+    || fail "fm-spawn should resolve the Herdr parent exactly once in each locked presentation path"
+  recovery_ensure=$(grep -n 'presentation recovery could not ensure' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  recovery_lock=$(grep -n 'presentation recovery could not acquire' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  recovery_resolve=$(grep -nF 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  fresh_ensure=$(grep -n 'presentation could not ensure its session server' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  fresh_lock=$(grep -n 'elif spawn_herdr_presentation_order_lock_acquire' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
+  fresh_resolve=$(grep -nF 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"' "$ROOT/bin/fm-spawn.sh" | tail -1 | cut -d: -f1)
+  [ "$recovery_ensure" -lt "$recovery_lock" ] && [ "$recovery_lock" -lt "$recovery_resolve" ] \
+    || fail "recovery resolves its parent before the named session and presentation lock are ready"
+  [ "$fresh_ensure" -lt "$fresh_lock" ] && [ "$fresh_lock" -lt "$fresh_resolve" ] \
+    || fail "fresh presentation resolves its parent before the named session and presentation lock are ready"
+  pass "fm-spawn: legacy parent resolution occurs only after server ensure and under the presentation lock"
+}
+
 # --- list_live: scoped to this home's own workspace only ---------------------
 
 test_list_live_scoped_to_this_homes_workspace_only() {
   local dir log resp fb out home
   dir="$TMP_ROOT/list-live-scoped"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  home="$TMP_ROOT/list-live-scoped-home"; mkdir -p "$home"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
+  home="$TMP_ROOT/list-live-scoped-home"; mkdir -p "$home/state"; printf 'bravo-b2\n' > "$home/.fm-secondmate-home"
+  printf 'version=1\nhome_id=bravo-b2\nsession=fmtest\nworkspace_id=w2\n' > "$home/state/.herdr-workspace"
   # 1: workspace_find's `workspace list` - two homes coexist, secondmate's is w2
   printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w2","label":"2🏴‍☠️-bravo-b2"}]}}\n' > "$resp/1.out"
   # 2: tab list --workspace w2 (this secondmate's own tabs only)
@@ -3009,6 +3062,7 @@ test_version_check_refuses_missing_herdr
 test_workspace_label_primary_home_no_marker
 test_workspace_label_secondmate_home_uses_marker_id
 test_workspace_label_secondmate_marker_trims_whitespace
+test_secondmate_marker_parser_is_shared_by_current_and_legacy_labels
 test_workspace_label_empty_marker_falls_back_to_primary
 test_workspace_label_terminal_suffix_unicode_and_invalid_marker
 test_workspace_label_different_secondmates_get_different_labels
@@ -3065,8 +3119,10 @@ test_projected_abort_cleanup_holds_presentation_lock
 test_projection_reclaim_refusal_matrix_is_non_mutating
 test_projection_reclaim_replaces_only_exact_husk_and_advances_binding
 test_projection_recovery_is_read_only_and_refuses_live_duplicate_risk
-test_workspace_find_matches_only_this_homes_own_label
+test_workspace_find_uses_exact_binding_when_display_labels_collide
 test_workspace_find_adopts_one_legacy_label_only
+test_workspace_ensure_binds_legacy_workspace_without_renaming
+test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
 test_normalize_key

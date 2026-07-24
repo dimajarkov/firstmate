@@ -336,6 +336,21 @@ spawn_herdr_presentation_order_lock_release() {
   fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
 }
 
+spawn_herdr_parent_resolve() {
+  local session=$1 home=$2
+  HERDR_PARENT_LABEL=$(FM_HOME="$home" fm_backend_herdr_workspace_label)
+  HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$home" fm_backend_herdr_workspace_find "$session" 2>/dev/null || true)
+  if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
+    FM_HOME="$home" fm_backend_herdr_workspace_binding_publish \
+      "$session" "$HERDR_PARENT_WORKSPACE_ID" || {
+        HERDR_PARENT_WORKSPACE_ID=""
+        return 1
+      }
+    HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id \
+      "$session" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")
+  fi
+}
+
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
 # positional as one and spawn each by re-execing this script in single-task mode. We use
 # the FM_ROOT path (not $0) so it works whatever cwd or relative path invoked us, and reuse
@@ -912,14 +927,6 @@ case "$BACKEND" in
     HERDR_PROJECTED=0
     if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
       HERDR_SES=$(fm_backend_herdr_session)
-      HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
-      # A live legacy workspace remains a valid parent during the display-label
-      # transition. Use its exact current label for presentation-only ordering;
-      # endpoint selection continues to use recorded pane ids.
-      HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_find "$HERDR_SES" 2>/dev/null || true)
-      if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
-        HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")
-      fi
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
@@ -929,6 +936,7 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
+        spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" || exit 1
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
@@ -968,8 +976,7 @@ case "$BACKEND" in
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
           echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
-          HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
-            "$HERDR_SES" "$HERDR_PARENT_LABEL" 2>/dev/null || true)
+          spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" || true
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
             echo "warning: herdr presentation parent is absent or ambiguous; using the ordinary flat layout without projection" >&2
             spawn_herdr_presentation_order_lock_release
@@ -997,7 +1004,8 @@ case "$BACKEND" in
             HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
             HERDR_PROJECTION_ABORT_SEEDED_PANE=$FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID
             fm_backend_herdr_projection_order_best_effort \
-              "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_PARENT_LABEL"
+              "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_PARENT_LABEL" \
+              "$HERDR_PARENT_WORKSPACE_ID"
             HERDR_HOME_ID=$(fm_backend_herdr_projection_home_identity "$HERDR_LABEL_HOME" 2>/dev/null || true)
             if [ -n "$HERDR_HOME_ID" ] \
                && fm_backend_herdr_projection_live_binding_matches \
