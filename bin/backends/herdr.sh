@@ -189,6 +189,53 @@ fm_backend_herdr_workspace_session_key() {
   printf '%s' "$key"
 }
 
+fm_backend_herdr_session_dir_incarnation() {  # <session-dir>
+  local dir=$1 canonical identity fingerprint
+  [ -d "$dir" ] || return 1
+  canonical=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    identity=$(stat -f '%d:%i:%B' "$canonical" 2>/dev/null) || return 1
+  else
+    identity=$(stat -c '%d:%i:%W' "$canonical" 2>/dev/null) || return 1
+  fi
+  case "$identity" in *:0|'') return 1 ;; esac
+  if command -v shasum >/dev/null 2>&1; then
+    fingerprint=$(printf '%s\0%s' "$canonical" "$identity" | shasum -a 256 2>/dev/null | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    fingerprint=$(printf '%s\0%s' "$canonical" "$identity" | sha256sum 2>/dev/null | awk '{print $1}')
+  else
+    return 1
+  fi
+  [ "${#fingerprint}" -eq 64 ] || return 1
+  case "$fingerprint" in *[!0-9a-f]*) return 1 ;; esac
+  printf '%s' "$fingerprint"
+}
+
+fm_backend_herdr_session_incarnation() {  # <session>
+  local session=$1 sessions session_dir socket socket_dir
+  sessions=$(HERDR_SESSION="$session" herdr session list --json 2>/dev/null) || return 1
+  session_dir=$(printf '%s' "$sessions" | jq -er --arg want "$session" '
+    [.sessions[]?
+      | select(.name == $want and .running == true)
+      | select((.session_dir | type) == "string" and (.session_dir | length) > 0)
+      | .session_dir]
+    | if length == 1 then .[0] else empty end
+  ' 2>/dev/null || true)
+  if [ -z "$session_dir" ]; then
+    socket=$(printf '%s' "$sessions" | jq -er --arg want "$session" '
+      [.sessions[]?
+        | select(.name == $want and .running == true)
+        | select((.socket_path | type) == "string" and (.socket_path | length) > 0)
+        | .socket_path]
+      | if length == 1 then .[0] else empty end
+    ' 2>/dev/null) || return 1
+    socket_dir=${socket%/*}
+    [ -n "$socket_dir" ] && [ "$socket_dir" != "$socket" ] || return 1
+    session_dir=$socket_dir
+  fi
+  fm_backend_herdr_session_dir_incarnation "$session_dir"
+}
+
 fm_backend_herdr_workspace_state_dir() {
   local home state_path state
   [ -d "$FM_HOME" ] || return 1
@@ -250,14 +297,24 @@ fm_backend_herdr_workspace_binding_preflight() {  # <session>
 }
 
 fm_backend_herdr_workspace_record_bound_id() {
-  local record=$1 session=$2 version home_id bound_session workspace expected_id
+  local record=$1 session=$2 version home_id bound_session bound_incarnation current_incarnation workspace expected_id
   expected_id=$(fm_backend_herdr_secondmate_id) || return 1
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   version=$(fm_backend_herdr_workspace_binding_field "$record" version) || return 1
   home_id=$(fm_backend_herdr_workspace_binding_field "$record" home_id) || return 1
   bound_session=$(fm_backend_herdr_workspace_binding_field "$record" session) || return 1
+  bound_incarnation=$(fm_backend_herdr_workspace_binding_field "$record" session_incarnation) || return 1
   workspace=$(fm_backend_herdr_workspace_binding_field "$record" workspace_id) || return 1
-  [ "$version" = 1 ] && [ "$home_id" = "$expected_id" ] && [ "$bound_session" = "$session" ] || return 1
+  current_incarnation=$(fm_backend_herdr_session_incarnation "$session") || return 1
+  [ "$version" = 2 ] \
+    && [ "$home_id" = "$expected_id" ] \
+    && [ "$bound_session" = "$session" ] \
+    && [ "$bound_incarnation" = "$current_incarnation" ] || return 1
+  case "$bound_incarnation" in ''|*[!0-9a-f]*)
+    return 1
+    ;;
+  esac
+  [ "${#bound_incarnation}" -eq 64 ] || return 1
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   printf '%s' "$workspace"
 }
@@ -277,7 +334,7 @@ fm_backend_herdr_workspace_bound_id() {  # <session>
 }
 
 fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <workspace-id> [seeded-tab-id]
-  local record_name=$1 session=$2 workspace=$3 seeded_tab=${4:-} id status state record tmp
+  local record_name=$1 session=$2 workspace=$3 seeded_tab=${4:-} id status incarnation state record tmp
   if id=$(fm_backend_herdr_secondmate_id); then
     :
   else
@@ -288,6 +345,7 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   case "$session" in ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac
   case "$workspace" in ''|*[[:space:]]*) return 1 ;; esac
   case "$seeded_tab" in *[[:space:]]*) return 1 ;; esac
+  incarnation=$(fm_backend_herdr_session_incarnation "$session") || return 1
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
   case "$record_name" in
     "$FM_BACKEND_HERDR_WORKSPACE_BINDING") [ -z "$seeded_tab" ] || return 1 ;;
@@ -305,9 +363,10 @@ fm_backend_herdr_workspace_record_publish() {  # <record-name> <session> <worksp
   tmp=$(mktemp "$state/.herdr-workspace.record.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   if ! {
-    printf 'version=1\n'
+    printf 'version=2\n'
     printf 'home_id=%s\n' "$id"
     printf 'session=%s\n' "$session"
+    printf 'session_incarnation=%s\n' "$incarnation"
     printf 'workspace_id=%s\n' "$workspace"
     [ -z "$seeded_tab" ] || printf 'seeded_tab_id=%s\n' "$seeded_tab"
   } > "$tmp"; then
