@@ -1704,6 +1704,10 @@ test_workspace_ensure_retains_recovery_when_exact_rollback_fails() {
   rm -f "$resp/.count"
   printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-rollback-fails"}]}}\n' > "$resp/1.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/2.out"
+  rm -f "$resp/3.exit"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
   out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '
       . "$0/bin/backends/herdr.sh"
@@ -1761,11 +1765,41 @@ test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable() {
   pass "fm_backend_herdr_workspace_ensure: unreadable seeded-tab recovery remains retryable"
 }
 
+test_workspace_ensure_drops_recovered_seed_authority_for_live_agent() {
+  local dir log resp fb out home recovery
+  dir="$TMP_ROOT/binding-recovery-live-seed"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  home="$TMP_ROOT/binding-recovery-live-seed-home"; mkdir -p "$home/state"; printf 'recovery-live-secondmate\n' > "$home/.fm-secondmate-home"
+  recovery="$home/state/.herdr-workspace-recovery"
+  printf 'version=1\nhome_id=recovery-live-secondmate\nsession=fmtest\nworkspace_id=w9\nseeded_tab_id=w9:t1\n' > "$recovery"
+  printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"2🏴‍☠️-recovery-live"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_workspace_ensure fmtest /tmp >/dev/null || exit 1
+      printf "%s\t%s" "$FM_BACKEND_HERDR_WS_ID" "$FM_BACKEND_HERDR_WS_SEEDED_TAB_ID"
+    ' "$ROOT")
+  [ "$out" = $'w9\t' ] || fail "live recovered seed retained prune authority, got '$out'"
+  [ "$(sed -n 's/^workspace_id=//p' "$home/state/.herdr-workspace")" = w9 ] \
+    || fail "live recovered seed did not retain the workspace's authoritative binding"
+  [ ! -e "$recovery" ] || fail "live recovered seed left stale recovery authority"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close' \
+    "live recovered seed closed a registered idle agent pane"
+  pass "fm_backend_herdr_workspace_ensure: registered agents revoke recovered seed prune authority"
+}
+
 test_spawn_resolves_parent_only_after_server_and_presentation_lock() {
-  local source recovery_ensure recovery_lock recovery_resolve fresh_ensure fresh_lock fresh_resolve
+  local source resolver recovery_ensure recovery_lock recovery_resolve fresh_ensure fresh_lock fresh_resolve
   source=$(cat "$ROOT/bin/fm-spawn.sh")
+  resolver=$(sed -n '/^spawn_herdr_parent_resolve()/,/^}/p' "$ROOT/bin/fm-spawn.sh")
   [ "$(printf '%s' "$source" | grep -Fc 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"')" -eq 2 ] \
     || fail "fm-spawn should resolve the Herdr parent exactly once in each locked presentation path"
+  assert_not_contains "$resolver" "workspace_binding_publish" \
+    "presentation parent resolution promoted binding state and cleared pending recovery authority"
   recovery_ensure=$(grep -n 'presentation recovery could not ensure' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
   recovery_lock=$(grep -n 'presentation recovery could not acquire' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
   recovery_resolve=$(grep -nF 'spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME"' "$ROOT/bin/fm-spawn.sh" | head -1 | cut -d: -f1)
@@ -3257,6 +3291,7 @@ test_workspace_ensure_rolls_back_exact_create_on_late_binding_failure
 test_workspace_ensure_retains_recovery_when_exact_rollback_fails
 test_workspace_ensure_keeps_recovery_when_rollback_list_is_malformed
 test_workspace_ensure_keeps_recovery_when_seed_revalidation_is_unreadable
+test_workspace_ensure_drops_recovered_seed_authority_for_live_agent
 test_spawn_resolves_parent_only_after_server_and_presentation_lock
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target

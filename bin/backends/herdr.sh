@@ -317,7 +317,7 @@ fm_backend_herdr_workspace_recovery_publish() {  # <session> <workspace-id> [see
 }
 
 fm_backend_herdr_workspace_recovery_seeded_tab() {
-  local session=$1 workspace=$2 state recovery bound seeded_tab tabs result
+  local session=$1 workspace=$2 state recovery bound seeded_tab tabs result pane agent_state
   state=$(fm_backend_herdr_workspace_state_dir) || return 1
   recovery="$state/$FM_BACKEND_HERDR_WORKSPACE_RECOVERY"
   bound=$(fm_backend_herdr_workspace_record_bound_id "$recovery" "$session") || return 1
@@ -342,6 +342,14 @@ fm_backend_herdr_workspace_recovery_seeded_tab() {
   ' 2>/dev/null) || return 2
   [ "$result" = absent ] && return 1
   [ "$result" = "$seeded_tab" ] || return 2
+  pane=$(fm_backend_herdr_pane_for_tab "$session" "$workspace" "$seeded_tab") || return 2
+  [ -n "$pane" ] || return 1
+  agent_state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
+  case "$agent_state" in
+    no-agent) ;;
+    dead|live) return 1 ;;
+    *) return 2 ;;
+  esac
   printf '%s' "$seeded_tab"
 }
 
@@ -1108,12 +1116,9 @@ fm_backend_herdr_workspace_label_for_id() {  # <session> <workspace-id>
 # "1". workspace_find adopted that pre-existing (captain-owned, LIVE) workspace
 # by the label match, the heuristic matched too, and the very next spawn
 # closed the captain's own live pane 27ms after creating its task tab. The
-# fix is structural, not another heuristic: only a workspace THIS SAME
-# fm_backend_herdr_workspace_ensure call just created carries a non-empty
-# seeded_tab_id at all (see FM_BACKEND_HERDR_WS_SEEDED_TAB_ID below); an
-# ADOPTED workspace's seeded_tab_id is always empty, so create_task never
-# calls this function for one, regardless of how its tabs happen to be
-# labeled.
+# fix is structural, not another heuristic: only response-derived authority
+# from a fresh create or an exact agent-free recovery carries a non-empty
+# seeded_tab_id at all (see FM_BACKEND_HERDR_WS_SEEDED_TAB_ID below).
 #
 # Defense in depth on top of that gate (not the primary safety mechanism):
 # re-verify <seeded_tab_id> is still present, still carries label "1" (a
@@ -1402,15 +1407,15 @@ fm_backend_herdr_agent_alive() {  # <target>
 # sibling tabs, so this is defense in depth rather than a behavior change.
 # <seeded_default_tab_id> (4th arg, may be empty) is exactly the value
 # fm_backend_herdr_workspace_ensure captured as FM_BACKEND_HERDR_WS_SEEDED_TAB_ID
-# for THIS SAME container - non-empty only when this spawn's own
-# container_ensure call just created the workspace. Once the real task tab
+# for THIS SAME container - non-empty only for a fresh response-created
+# workspace or an exact agent-free recovery of one. Once the real task tab
 # above is created, this is the ONLY input that may trigger a prune, and it is
 # passed by the caller, never re-derived here from tab list contents or
 # labels (the live-fire self-kill fix - see
 # fm_backend_herdr_workspace_prune_seeded_default_tab for the incident and
-# the safety argument). An ADOPTED workspace's caller always passes an empty
-# 4th arg, so this function never even queries for a prune candidate in that
-# case. Echoes "<tab_id> <pane_id>" on success.
+# the safety argument). An ordinary adopted workspace's caller always passes
+# an empty 4th arg, so this function never even queries for a prune candidate
+# in that case. Echoes "<tab_id> <pane_id>" on success.
 fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id>
   local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
   session=${container%%:*}
