@@ -78,17 +78,22 @@ A metadata-routed selector returns the recorded backend target (`terminal=` for 
 Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
 These five sentences are the single owner of the task-selector vocabulary; backend guides and other documents point here instead of restating the resolution order.
 `fm-teardown.sh <id>` takes a task id directly and uses the same recorded backend target fields after loading `state/<id>.meta`.
-By default, Herdr workspaces are derived from `FM_HOME`: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.
+By default, Herdr workspace labels are derived from `FM_HOME`: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses the standard visible label `2🏴‍☠️-<id>` with only a terminal `-secondmate` omitted.
+This is a shared convention, not a per-home preference or configuration setting.
+The durable marker id remains the routing identity, and exact recorded endpoint targets remain operational authority.
 The default-container spawn, list-live, and recovery paths read that label from the active home, so a secondmate's own crewmates stay inside that secondmate home's herdr space.
+During transition, exactly one live legacy `2ndmate-<id>` workspace is reused without renaming, so its tasks remain reachable for spawn, recovery, send, inspection, cleanup, and presentation ordering.
 The optional local `config/herdr-presentation-spaces` presence flag instead enables Herdr's default-off disposable single-task visual projection; [Optional presentation spaces](herdr-backend.md#optional-presentation-spaces) owns its behavior, safety limits, and recovery contract.
 The flag is default-off and inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
 For normal herdr operations, `HERDR_SESSION` selects the named session, but destructive test cleanup must not rely on `HERDR_SESSION` alone.
 Use the explicit guarded cleanup path described in [`docs/herdr-backend.md`](herdr-backend.md) instead of `herdr server stop`.
 For normal zellij operations, `FM_ZELLIJ_SESSION` selects the named session and defaults to `firstmate`.
 Zellij has no per-home workspace split: primary and secondmate tasks share that one session, and visible tab titles are scoped by the active `FM_HOME` readable label plus a short hash of the resolved `FM_ROOT` path as `fm-<home-label>-<id>`.
+Its existing hash-scoped `2ndmate-<id>-<hash>` machine label remains unchanged.
 Use the guarded cleanup path described in [`docs/zellij-backend.md`](zellij-backend.md) instead of `kill-all-sessions` or `delete-all-sessions`.
 cmux has no session layer at all - one workspace per task, in whatever cmux window is open - and its socket password (when configured) is read from local, gitignored `config/cmux-socket-password` under the effective config directory, never committed.
 The caller-facing label remains `fm-<id>`, but the actual cmux workspace title is scoped by the active `FM_HOME` readable label plus a short hash of the resolved `FM_ROOT` path as `fm-<home-label>-<id>`.
+Its existing hash-scoped `2ndmate-<id>-<hash>` machine label likewise remains unchanged.
 Test cleanup must use the guarded path in [`docs/cmux-backend.md`](cmux-backend.md#current-operation-and-safety), never enumerate-and-close every workspace.
 The `config/backend` file is not inherited by secondmate homes.
 

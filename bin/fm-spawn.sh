@@ -913,6 +913,13 @@ case "$BACKEND" in
     if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
+      # A live legacy workspace remains a valid parent during the display-label
+      # transition. Use its exact current label for presentation-only ordering;
+      # endpoint selection continues to use recorded pane ids.
+      HERDR_PARENT_WORKSPACE_ID=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_find "$HERDR_SES" 2>/dev/null || true)
+      if [ -n "$HERDR_PARENT_WORKSPACE_ID" ]; then
+        HERDR_PARENT_LABEL=$(fm_backend_herdr_workspace_label_for_id "$HERDR_SES" "$HERDR_PARENT_WORKSPACE_ID" 2>/dev/null || printf '%s' "$HERDR_PARENT_LABEL")
+      fi
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2

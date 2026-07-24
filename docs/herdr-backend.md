@@ -35,7 +35,8 @@ Real harness credential tests remain opt-in rather than part of default CI.
 
 Each Firstmate home gets one durable workspace with one task tab per endpoint.
 The primary workspace is `firstmate`.
-A secondmate home uses `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker.
+A secondmate home uses the standard visible label `2🏴‍☠️-<id>`, derived from its validated `.fm-secondmate-home` marker by omitting only a terminal `-secondmate`.
+The durable marker id and exact recorded endpoint targets remain unchanged, and the label requires no per-home configuration.
 The secondmate process and every child it launches resolve the same home label; a secondmate launched by the primary receives a narrowly scoped home override during container creation.
 
 Attach to the selected named Herdr session and switch to the relevant home workspace to watch its task tabs.
@@ -46,8 +47,10 @@ The first workspace in a completely empty Herdr session must become focused beca
 
 Herdr does not enforce workspace or tab label uniqueness.
 Firstmate adopts the first workspace matching its derived home label and refuses duplicate task tabs inside it.
-Avoid naming a personal workspace `firstmate` or `2ndmate-<id>` because the adapter cannot distinguish that label collision from its own container.
-An older secondmate workspace using `firstmate-<id>` is not migrated automatically; rename it manually before expecting new tasks or recovery to use it.
+If the current label is absent, Firstmate reuses exactly one live legacy `2ndmate-<id>` workspace without renaming it.
+Ambiguous duplicate legacy labels are left untouched rather than guessed at.
+Avoid naming a personal workspace `firstmate`, `2🏴‍☠️-<id>`, or `2ndmate-<id>` because the adapter cannot distinguish that label collision from its own container.
+An even older secondmate workspace using `firstmate-<id>` is not migrated automatically; rename it manually before expecting new tasks or recovery to use it.
 
 Existing task operations use recorded endpoint ids and do not move a live task when labels change.
 The per-home workspace is reused while it has task tabs.
