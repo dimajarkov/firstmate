@@ -34,7 +34,7 @@
 #   upgrades its attempt journal with exact home, session, workspace, tab, pane,
 #   parent, and label bindings. On a same-identity restart, that complete binding
 #   plus authoritative metadata may replace one exact agent-free husk in place.
-#   The journal, visible token, and labels alone are never endpoint or ownership
+#   The journal and labels alone are never endpoint or ownership
 #   authority, and every ambiguous recovery stays on the flat fallback after
 #   duplicate-agent risk is independently absent. Treehouse allocation and task
 #   metadata are unchanged.
@@ -43,8 +43,9 @@
 #   canonical socket, outside any home's state/) through launch handoff. Lock
 #   contention warns and falls back to the ordinary flat layout before any
 #   projection mutation. The exact response-derived new workspace is inserted
-#   immediately after its owning parent (firstmate or 2ndmate-<id>) contiguous
-#   child block. Ordering never authorizes lifecycle cleanup, and any
+#   immediately after its exact owning parent's contiguous child block,
+#   whether that parent retains a current or legacy display label. Ordering
+#   never authorizes lifecycle cleanup, and any
 #   unavailable, ambiguous, or failed move warns while the spawn continues.
 #   Every projected create, prune, and move captures and verifies the named
 #   session's exact active workspace and tab. A detected focus change restores
@@ -334,6 +335,32 @@ spawn_herdr_presentation_order_lock_release() {
   [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ] || return 0
   HERDR_PRESENTATION_ORDER_LOCK_HELD=0
   fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
+}
+
+spawn_herdr_parent_resolve() {
+  local session=$1 home=$2 cwd=${3:-$PWD} status parent_label parent_workspace_id
+  HERDR_PARENT_LABEL=""
+  HERDR_PARENT_WORKSPACE_ID=""
+  parent_label=$(FM_HOME="$home" fm_backend_herdr_workspace_label) || return $?
+  # Secondmate parent migration must establish its exact identity before a
+  # presentation child consults it. Primary homes retain their exactly-one
+  # label ambiguity guard and never create a parent from this resolver.
+  if FM_HOME="$home" fm_backend_herdr_secondmate_id >/dev/null; then
+    parent_workspace_id=$(FM_HOME="$home" \
+      fm_backend_herdr_workspace_ensure "$session" "$cwd" 2>/dev/null) || return $?
+    [ -n "$parent_workspace_id" ] || return 1
+  else
+    status=$?
+    [ "$status" -eq 1 ] || return "$status"
+  fi
+  parent_workspace_id=$(FM_HOME="$home" \
+    fm_backend_herdr_workspace_find "$session" 2>/dev/null) || return $?
+  [ -n "$parent_workspace_id" ] || return 1
+  parent_label=$(fm_backend_herdr_workspace_label_for_id \
+    "$session" "$parent_workspace_id" 2>/dev/null) || return $?
+  [ -n "$parent_label" ] || return 1
+  HERDR_PARENT_LABEL=$parent_label
+  HERDR_PARENT_WORKSPACE_ID=$parent_workspace_id
 }
 
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
@@ -912,7 +939,6 @@ case "$BACKEND" in
     HERDR_PROJECTED=0
     if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
       HERDR_SES=$(fm_backend_herdr_session)
-      HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
         fm_backend_herdr_server_ensure "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
@@ -922,17 +948,24 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
+        HERDR_RECOVERY_PARENT_READY=0
+        if spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS"; then
+          HERDR_RECOVERY_PARENT_READY=1
+        else
+          echo "warning: herdr presentation recovery has no current exact parent; in-place reclaim is disabled" >&2
+        fi
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then
           herdr_projection_existing_meta_allows_flat "$STATE/$ID.meta" || exit 1
         fi
         fm_backend_herdr_projection_recovery_allows_flat \
           "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" || exit 1
-        if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ]; then
+        if [ "${HERDR_RECOVERY_BACKEND:-}" = herdr ] \
+           && [ "$HERDR_RECOVERY_PARENT_READY" -eq 1 ]; then
           set +e
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_WORKSPACE_ID" "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in
@@ -961,8 +994,7 @@ case "$BACKEND" in
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
           echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
-          HERDR_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
-            "$HERDR_SES" "$HERDR_PARENT_LABEL" 2>/dev/null || true)
+          spawn_herdr_parent_resolve "$HERDR_SES" "$HERDR_LABEL_HOME" "$PROJ_ABS" || true
           if [ -z "$HERDR_PARENT_WORKSPACE_ID" ]; then
             echo "warning: herdr presentation parent is absent or ambiguous; using the ordinary flat layout without projection" >&2
             spawn_herdr_presentation_order_lock_release
@@ -990,7 +1022,8 @@ case "$BACKEND" in
             HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
             HERDR_PROJECTION_ABORT_SEEDED_PANE=$FM_BACKEND_HERDR_PROJECTION_SEEDED_PANE_ID
             fm_backend_herdr_projection_order_best_effort \
-              "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_PARENT_LABEL"
+              "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_PARENT_LABEL" \
+              "$HERDR_PARENT_WORKSPACE_ID"
             HERDR_HOME_ID=$(fm_backend_herdr_projection_home_identity "$HERDR_LABEL_HOME" 2>/dev/null || true)
             if [ -n "$HERDR_HOME_ID" ] \
                && fm_backend_herdr_projection_live_binding_matches \
@@ -1014,11 +1047,11 @@ case "$BACKEND" in
     if [ "$HERDR_PROJECTED" -ne 1 ]; then
       HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
-      # (the second field empty when this call ADOPTED a pre-existing workspace
-      # rather than creating a fresh one). Split on the guaranteed single tab
-      # character; the seeded tab id is threaded through to create_task
-      # untouched, which is the only function permitted to prune it (never
-      # re-derived from labels - see docs/herdr-backend.md "Default-tab prune").
+      # (the second field is populated only by fresh or safely recovered
+      # response authority). Split on the guaranteed single tab character;
+      # the seeded tab id is threaded through to create_task untouched, which
+      # is the only function permitted to prune it (never re-derived from
+      # labels - see docs/herdr-backend.md "Default-tab prune").
       CONTAINER=${HERDR_CONTAINER_RAW%%$'\t'*}
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}

@@ -326,6 +326,11 @@ case "${1:-} ${2:-}" in
   "status --json")
     printf '%s\n' '{"client":{"protocol":14,"version":"test"},"server":{"running":true}}'
     ;;
+  "session list")
+    session_dir="${state}.session"
+    mkdir -p "$session_dir"
+    printf '{"sessions":[{"name":"default","running":true,"session_dir":"%s"}]}\n' "$session_dir"
+    ;;
   "workspace list")
     printf '{"result":{"workspaces":[{"workspace_id":"ws1","label":"2ndmate-%s"}]}}\n' "$mate_id"
     ;;
