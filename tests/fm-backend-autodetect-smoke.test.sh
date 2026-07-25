@@ -40,6 +40,10 @@ assert_contains_local() {  # <haystack> <needle> <msg>
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (required by fm-spawn.sh)"; exit 0; }
+REAL_TREEHOUSE=$(command -v treehouse)
+
+# shellcheck source=tests/treehouse-test-safety.sh
+. "$ROOT/tests/treehouse-test-safety.sh"
 
 export FM_GATE_REFUSE_BYPASS=1
 
@@ -51,7 +55,7 @@ export FM_GATE_REFUSE_BYPASS=1
 # The dedicated regression is
 # tests/fm-backend.test.sh:test_spawn_symlinked_project_prefix_avoids_false_refusal.
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-backend-autodetect-smoke.XXXXXX")
-HERDR_LAB_HELPER="$ROOT/bin/fm-herdr-lab.sh"
+HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-autodetect-smoke-concurrency-h3) || {
   rm -rf "$TMP_ROOT"
   fail "could not generate an isolated Herdr lab session name"
@@ -59,11 +63,22 @@ HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-autodetect-smoke-concurrency-h3)
 export HERDR_SESSION="$HERDR_LAB_SESSION"
 ID="autodetectsmoke1"
 WT=
+PROJ=
+LAB_CLEANUP_ARMED=0
 cleanup_all() {
-  local cleanup_status=0
-  [ -n "$WT" ] && command -v treehouse >/dev/null 2>&1 && treehouse return --force "$WT" >/dev/null 2>&1
-  "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
+  local cleanup_status=0 teardown_status
+  if [ "$LAB_CLEANUP_ARMED" -eq 1 ]; then
+    if "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"; then
+      LAB_CLEANUP_ARMED=0
+    else
+      teardown_status=$?
+      cleanup_status=$teardown_status
+    fi
+  fi
+  fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ" || cleanup_status=$?
+  if [ "$cleanup_status" -eq 0 ]; then
+    fm_treehouse_test_root_cleanup "$TMP_ROOT" || cleanup_status=$?
+  fi
   return "$cleanup_status"
 }
 on_exit() {
@@ -73,7 +88,10 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
-"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+LAB_CLEANUP_ARMED=1
 
 # --- scratch world: FM_HOME with NO backend config, one throwaway project ---
 
@@ -87,6 +105,11 @@ git -C "$PROJ" init -q
 printf '# scratch\n' > "$PROJ/README.md"
 git -C "$PROJ" add README.md
 git -C "$PROJ" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+fm_treehouse_test_isolation_prepare "$TMP_ROOT" "$PROJ" \
+  || fail "could not prove test-owned Treehouse isolation before spawn"
+fm_treehouse_test_install_shim "$TMP_ROOT" "$PROJ" "$REAL_TREEHOUSE" \
+  || fail "could not install the isolated Treehouse command wrapper"
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 # --- spawn with NO explicit backend config; HERDR_ENV=1 is the only marker --
 
@@ -159,5 +182,7 @@ if ! cleanup_all; then
   trap - EXIT
   fail "isolated Herdr lab teardown failed or the default fleet session changed"
 fi
+cleanup_all || fail "repeated partial-state cleanup was not idempotent"
 trap - EXIT
+pass "real herdr: successful, partial, and repeated cleanup removed the test-owned Treehouse pool before its temporary backing repository"
 pass "real herdr: isolated lab session removed and default fleet session unchanged"

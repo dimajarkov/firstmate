@@ -73,6 +73,18 @@ Herdr is a session provider only.
 Treehouse remains the worktree provider, exactly as it is for tmux.
 Herdr's own `worktree.*` operations (branch-based, pooling/lease-free) are never used by this adapter.
 
+### Treehouse isolation for real-runtime tests
+
+`tests/treehouse-test-safety.sh` owns the isolation and cleanup contract for every real-runtime fixture that invokes the installed Treehouse CLI against a temporary repository.
+Before the first Treehouse command, each fixture proves that the Git repository is physically below its exact temporary root, writes a repository-local config whose state root is physically below that same root, disables update-cache writes, and installs a pane-visible wrapper.
+Missing, malformed, redirected, or ambient-home isolation is refused before pool creation.
+Cleanup revalidates the same binding, uses supported Treehouse return and exact-pool destroy commands, and removes the temporary root only after no managed worktrees remain.
+
+The portable lifecycle regression is `bash tests/treehouse-test-safety.test.sh`.
+It covers normal completion, command failure, timeout termination, signal interruption, two parallel acquisitions, malformed isolation, and immutable ambient Treehouse listings.
+Installed-CLI validation must isolate HOME, config, cache, state, temporary, and pool roots before any Treehouse command.
+The private incident report retains exact paths, commands, output, and immutable before-and-after hashes rather than duplicating task chronology here.
+
 ## Default task container shape: tab-per-task in one workspace PER FIRSTMATE HOME
 
 Firstmate creates one herdr workspace PER FIRSTMATE HOME - the primary gets `firstmate`, and each secondmate gets its own derived `2🏴‍☠️-<id>` display label - and one TAB per task inside that home's own workspace.
