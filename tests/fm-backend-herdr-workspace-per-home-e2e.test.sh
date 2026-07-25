@@ -50,6 +50,7 @@ assert_not_contains_local() {  # <haystack> <needle> <msg>
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (required by fm-spawn.sh)"; exit 0; }
+REAL_TREEHOUSE=$(command -v treehouse)
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
@@ -79,12 +80,15 @@ cleanup_all() {
   fi
   fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ1" || cleanup_status=$?
   fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ2" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
+  if [ "$cleanup_status" -eq 0 ]; then
+    fm_treehouse_test_root_cleanup "$TMP_ROOT" || cleanup_status=$?
+  fi
   return "$cleanup_status"
 }
 trap cleanup_all EXIT
-fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
-LAB_CLEANUP_ARMED=1
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
@@ -114,6 +118,14 @@ make_scratch_project() {  # <dir>
 
 PROJ1="$TMP_ROOT/scratch-project-1"; make_scratch_project "$PROJ1"
 PROJ2="$TMP_ROOT/scratch-project-2"; make_scratch_project "$PROJ2"
+fm_treehouse_test_isolation_prepare "$TMP_ROOT" "$PROJ1" \
+  || fail "could not prove project 1 Treehouse isolation before spawn"
+fm_treehouse_test_isolation_prepare "$TMP_ROOT" "$PROJ2" \
+  || fail "could not prove project 2 Treehouse isolation before spawn"
+fm_treehouse_test_install_shim "$TMP_ROOT" "$PROJ1" "$REAL_TREEHOUSE" \
+  || fail "could not install the isolated Treehouse command wrapper"
+LAB_CLEANUP_ARMED=1
+fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # --- 1. primary-shaped home: a crewmate spawns into the "firstmate" space ---
 

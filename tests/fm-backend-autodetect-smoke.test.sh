@@ -40,6 +40,7 @@ assert_contains_local() {  # <haystack> <needle> <msg>
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (required by fm-spawn.sh)"; exit 0; }
+REAL_TREEHOUSE=$(command -v treehouse)
 
 # shellcheck source=tests/treehouse-test-safety.sh
 . "$ROOT/tests/treehouse-test-safety.sh"
@@ -75,7 +76,9 @@ cleanup_all() {
     fi
   fi
   fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJ" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
+  if [ "$cleanup_status" -eq 0 ]; then
+    fm_treehouse_test_root_cleanup "$TMP_ROOT" || cleanup_status=$?
+  fi
   return "$cleanup_status"
 }
 on_exit() {
@@ -85,8 +88,10 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 LAB_CLEANUP_ARMED=1
-"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 # --- scratch world: FM_HOME with NO backend config, one throwaway project ---
 
@@ -100,6 +105,11 @@ git -C "$PROJ" init -q
 printf '# scratch\n' > "$PROJ/README.md"
 git -C "$PROJ" add README.md
 git -C "$PROJ" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+fm_treehouse_test_isolation_prepare "$TMP_ROOT" "$PROJ" \
+  || fail "could not prove test-owned Treehouse isolation before spawn"
+fm_treehouse_test_install_shim "$TMP_ROOT" "$PROJ" "$REAL_TREEHOUSE" \
+  || fail "could not install the isolated Treehouse command wrapper"
+"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 # --- spawn with NO explicit backend config; HERDR_ENV=1 is the only marker --
 

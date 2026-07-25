@@ -212,7 +212,7 @@ set -u
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
   exit 0
 fi
-exec "$REAL_TREEHOUSE" "$@"
+exec env TREEHOUSE_NO_UPDATE_CHECK=1 "$REAL_TREEHOUSE" "$@"
 SH
 
 cat > "$FAKEBIN/herdr-workspace-mover" <<'SH'
@@ -279,10 +279,15 @@ cleanup_all() {
   fi
   PATH="$HERDR_ORIGINAL_PATH" \
     fm_treehouse_test_pool_cleanup "$TMP_ROOT" "$PROJECT_DIR" || cleanup_status=$?
-  rm -rf "$TMP_ROOT"
+  if [ "$cleanup_status" -eq 0 ]; then
+    fm_treehouse_test_root_cleanup "$TMP_ROOT" || cleanup_status=$?
+  fi
   return "$cleanup_status"
 }
 trap cleanup_all EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 LAB_READY=1
 PATH="$HERDR_ORIGINAL_PATH" \
@@ -381,6 +386,8 @@ make_project() {  # <dir>
   printf '# Herdr projection E2E fixture\n' > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
+  fm_treehouse_test_isolation_prepare "$TMP_ROOT" "$dir" \
+    || fail "could not prove test-owned Treehouse isolation before spawn"
 }
 
 spawn_task() {  # <id> <home> <project>
