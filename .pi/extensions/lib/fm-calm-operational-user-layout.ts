@@ -1,4 +1,4 @@
-// Pi 0.81.1 and 0.82.0 add the ordinary-user spacer and row together.
+// Pi 0.81.1, 0.82.0, and 0.82.1 add the ordinary-user spacer and row together.
 // This exact-version adapter changes only that presentation and never message delivery.
 import {
   InteractiveMode,

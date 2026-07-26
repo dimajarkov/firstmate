@@ -22,8 +22,8 @@ TMUX_SESSION="fm-calm-e2e"
 require_supported_pi_calm_version() {
   local version=$1
   case "$version" in
-    0.81.1|0.82.0) ;;
-    *) fail "Pi Calm compatibility assumptions require Pi 0.81.1 or 0.82.0, found $version" ;;
+    0.81.1|0.82.0|0.82.1) ;;
+    *) fail "Pi Calm compatibility assumptions require Pi 0.81.1, 0.82.0, or 0.82.1, found $version" ;;
   esac
 }
 
@@ -946,7 +946,7 @@ let adjacent = false;
 let latestInputRole: "user" | "custom" | undefined;
 
 const EXACT_WATCHER_INPUT =
-  "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /Users/kunchen/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\n" +
+  "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\n" +
   "Run bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.";
 
 function monitorInput(suffix: "ONE" | "TWO"): string {
@@ -1117,7 +1117,7 @@ TS
     if [ "$calm_state" = on ]; then
       assert_not_contains "$pane" "MONITOR_${label}_ONE" "Pi follow-up $label case rendered a Calm-hidden operational user row"
       if [ "$label" = exact_watcher ]; then
-        assert_not_contains "$pane" "FIRSTMATE WATCHER WAKE: signal: /Users/kunchen/github/kunchenguid/firstmate/state/oss-triage-t4.status" \
+        assert_not_contains "$pane" "FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status" \
           "Pi exact watcher case rendered the Calm-hidden authoritative payload"
         assert_not_contains "$pane" "Run bin/fm-wake-drain.sh first and handle the queued wake." \
           "Pi exact watcher case rendered the Calm-hidden drain instruction"
@@ -1157,7 +1157,7 @@ const handled = expected === 2
 const expectedOperationalTexts = Array.from({ length: expected }, (_, index) => {
   const suffix = index === 0 ? "ONE" : "TWO";
   return label === "exact_watcher" && suffix === "ONE"
-    ? "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /Users/kunchen/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned."
+    ? "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned."
     : label === "legacy_away" && suffix === "ONE"
       ? "\u2063Supervisor escalate (LEGACY_AWAY_E2E)"
       : `\u2063FIRSTMATE_OP: v1 watcher: MONITOR_${label}_${suffix}`;
@@ -1221,7 +1221,7 @@ JS
     done
     assert_contains "$pane" "CAPTAIN_PROMPT_exact_watcher" "Pi restart lost the genuine captain prompt"
     assert_contains "$pane" "MONITOR_HANDLED_exact_watcher_ONE" "Pi restart lost the operational processing response"
-    assert_not_contains "$pane" "FIRSTMATE WATCHER WAKE: signal: /Users/kunchen/github/kunchenguid/firstmate/state/oss-triage-t4.status" \
+    assert_not_contains "$pane" "FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status" \
       "Pi restart replayed the Calm-hidden exact watcher row"
     captain_line=$(printf '%s\n' "$pane" | grep -Fn 'CAPTAIN_ANSWER_exact_watcher' | tail -1 | cut -d: -f1)
     handled_line=$(printf '%s\n' "$pane" | grep -Fn 'MONITOR_HANDLED_exact_watcher_ONE' | tail -1 | cut -d: -f1)
@@ -1234,7 +1234,7 @@ const entries = fs.readFileSync(process.argv[2], "utf8").trim().split("\n").map(
 const text = (content) => typeof content === "string"
   ? content
   : (content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("");
-const exact = "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /Users/kunchen/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.";
+const exact = "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: signal: /home/fixture/github/kunchenguid/firstmate/state/oss-triage-t4.status\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.";
 const users = entries.filter((entry) => entry.type === "message" && entry.message.role === "user" && text(entry.message.content) === exact);
 const responses = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant" && text(entry.message.content) === "MONITOR_HANDLED_exact_watcher_ONE");
 if (users.length !== 1 || responses.length !== 1) {

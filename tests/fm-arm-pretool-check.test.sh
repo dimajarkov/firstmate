@@ -153,21 +153,21 @@ run_matrix_entry() {
   case "$entry" in
     codex)
       payload=$(jq -cn --arg command "$cmd" '{tool_name:"Bash",tool_input:{command:$command}}')
-      printf '%s' "$payload" | "$CHECK" >"$out_file" 2>"$err_file"
+      printf '%s' "$payload" | FM_HOME="$ROOT" "$CHECK" >"$out_file" 2>"$err_file"
       rc=$?
       ;;
     claude)
       payload=$(jq -cn --arg command "$cmd" '{tool_name:"Bash",tool_input:{command:$command}}')
-      printf '%s' "$payload" | "$CHECK" --claude >"$out_file" 2>"$err_file"
+      printf '%s' "$payload" | FM_HOME="$ROOT" "$CHECK" --claude >"$out_file" 2>"$err_file"
       rc=$?
       ;;
     grok)
       payload=$(jq -cn --arg command "$cmd" '{toolName:"run_terminal_command",toolInput:{command:$command}}')
-      printf '%s' "$payload" | "$CHECK" >"$out_file" 2>"$err_file"
+      printf '%s' "$payload" | FM_HOME="$ROOT" "$CHECK" >"$out_file" 2>"$err_file"
       rc=$?
       ;;
     opencode|pi)
-      "$CHECK" --command "$cmd" >"$out_file" 2>"$err_file"
+      FM_HOME="$ROOT" "$CHECK" --command "$cmd" >"$out_file" 2>"$err_file"
       rc=$?
       ;;
     *)
