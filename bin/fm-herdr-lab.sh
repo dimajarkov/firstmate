@@ -12,8 +12,10 @@
 #
 # Lifecycle commands require the exact running parent session through
 # FM_HERDR_LAB_PARENT_SESSION. The helper never infers it from the session
-# inventory. A Herdr-managed caller's injected session and socket must agree
-# with the supplied parent.
+# inventory. Lifecycle commands require a Herdr-managed caller's injected
+# session and socket to agree with the supplied parent. A run call entered
+# from the guarded task lab instead requires its injected session and socket
+# to exactly match that verified task target.
 # Session names must begin with "fm-lab-" and can never equal the parent.
 # The name command sanitizes the label, caps it at 16 characters, and appends
 # process/random suffixes to keep generated socket paths short.
@@ -117,20 +119,19 @@ fm_herdr_lab_parent_snapshot_from_inventory() { # <parent-session> <session-list
   printf '%s\n' "$snapshot"
 }
 
-fm_herdr_lab_verify_runtime_parent() { # <parent-session> <parent-snapshot>
-  local parent=$1 snapshot=$2 runtime_claim=0 runtime_session runtime_socket snapshot_socket marker
+fm_herdr_lab_verify_runtime_parent() { # <parent-session> <parent-snapshot> [<lab-session> <lab-snapshot>]
+  local parent=$1 snapshot=$2 name=${3:-} target_snapshot=${4:-} runtime_claim=0 runtime_session runtime_socket snapshot_socket marker
   for marker in HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH; do
     [ -z "${!marker:-}" ] || runtime_claim=1
   done
   [ "$runtime_claim" -eq 1 ] || return 0
 
   runtime_session=${HERDR_SESSION:-}
-  [ "$runtime_session" = "$parent" ] || {
-    fm_herdr_lab_error "protected parent '$parent' disagrees with the Herdr-managed caller session '${runtime_session:-<missing>}'"
-    return 1
-  }
   runtime_socket=${HERDR_SOCKET_PATH:-}
-  if [ -n "$runtime_socket" ]; then
+  if [ "$runtime_session" = "$parent" ]; then
+    if [ -z "$runtime_socket" ]; then
+      return 0
+    fi
     snapshot_socket=$(printf '%s' "$snapshot" | jq -er '.socket_path' 2>/dev/null) || {
       fm_herdr_lab_error "protected parent '$parent' has no verifiable socket identity"
       return 1
@@ -139,7 +140,25 @@ fm_herdr_lab_verify_runtime_parent() { # <parent-session> <parent-snapshot>
       fm_herdr_lab_error "protected parent '$parent' socket disagrees with the Herdr-managed caller"
       return 1
     }
+    return 0
   fi
+  if [ -n "$name" ] && [ "$runtime_session" = "$name" ]; then
+    [ -n "$runtime_socket" ] || {
+      fm_herdr_lab_error "task lab '$name' must provide its injected Herdr socket identity"
+      return 1
+    }
+    snapshot_socket=$(printf '%s' "$target_snapshot" | jq -er '.socket_path' 2>/dev/null) || {
+      fm_herdr_lab_error "task lab '$name' has no verifiable socket identity"
+      return 1
+    }
+    [ "$runtime_socket" = "$snapshot_socket" ] || {
+      fm_herdr_lab_error "task lab '$name' socket disagrees with the Herdr-managed caller"
+      return 1
+    }
+    return 0
+  fi
+  fm_herdr_lab_error "protected parent '$parent' disagrees with the Herdr-managed caller session '${runtime_session:-<missing>}'"
+  return 1
 }
 
 fm_herdr_lab_target_snapshot_from_inventory() { # <lab-session> <session-list-json>
@@ -213,12 +232,17 @@ fm_herdr_lab_tripwire_binding() { # <parent-session> <lab-session>
   printf '%s\n' "$record"
 }
 
-fm_herdr_lab_verify_inventory_binding() { # <parent-session> <lab-session> <session-list-json>
-  local parent=$1 name=$2 sessions=$3 record before after
+fm_herdr_lab_verify_inventory_binding() { # <parent-session> <lab-session> <session-list-json> [allow-task-runtime]
+  local parent=$1 name=$2 sessions=$3 allow_task_runtime=${4:-0} record before after target_snapshot
   record=$(fm_herdr_lab_tripwire_binding "$parent" "$name") || return 1
   before=$(printf '%s' "$record" | jq -cS '.parent_state')
   after=$(fm_herdr_lab_parent_snapshot_from_inventory "$parent" "$sessions") || return 1
-  fm_herdr_lab_verify_runtime_parent "$parent" "$after" || return 1
+  if [ "$allow_task_runtime" = 1 ]; then
+    target_snapshot=$(fm_herdr_lab_distinct_target_snapshot "$parent" "$name" "$sessions") || return 1
+    fm_herdr_lab_verify_runtime_parent "$parent" "$after" "$name" "$target_snapshot" || return 1
+  else
+    fm_herdr_lab_verify_runtime_parent "$parent" "$after" || return 1
+  fi
   [ "$before" = "$after" ] || {
     fm_herdr_lab_error "PROTECTED-PARENT TRIPWIRE FAILED: session '$parent' changed during lab work"
     fm_herdr_lab_error "before: $before"
@@ -239,8 +263,8 @@ fm_herdr_lab_check_tripwire() { # <session>
   fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions"
 }
 
-fm_herdr_lab_guard_target() { # <session>
-  local name=$1 parent sessions
+fm_herdr_lab_guard_target() { # <session> [allow-task-runtime]
+  local name=$1 allow_task_runtime=${2:-0} parent sessions
   parent=$(fm_herdr_lab_parent_name) || return 1
   fm_herdr_lab_validate_pair "$parent" "$name" || return 1
   fm_herdr_lab_tripwire_binding "$parent" "$name" >/dev/null || return 1
@@ -248,7 +272,7 @@ fm_herdr_lab_guard_target() { # <session>
     fm_herdr_lab_error "refusing task-lab operation because session inventory failed"
     return 1
   }
-  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" || return 1
+  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" "$allow_task_runtime" || return 1
   fm_herdr_lab_distinct_target_snapshot "$parent" "$name" "$sessions" >/dev/null
 }
 
@@ -330,7 +354,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
-  fm_herdr_lab_guard_target "$name" || return 1
+  fm_herdr_lab_guard_target "$name" 1 || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 

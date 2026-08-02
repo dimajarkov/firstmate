@@ -116,6 +116,23 @@ run_helper_without_parent() { # <helper arguments...>
     "$HELPER" "$@"
 }
 
+run_helper_from_task() { # <parent-session> <lab-session> <helper arguments...>
+  local parent=$1 name=$2 runtime_socket
+  shift 2
+  runtime_socket=${FM_FAKE_HERDR_RUNTIME_SOCKET:-"/tmp/$name.sock"}
+  env \
+    HERDR_ENV=1 \
+    HERDR_SESSION="$name" \
+    HERDR_SOCKET_PATH="$runtime_socket" \
+    PATH="$FAKEBIN:$PATH" \
+    FM_HERDR_LAB_PARENT_SESSION="$parent" \
+    FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
+    FM_FAKE_HERDR_SESSIONS="$FAKE_SESSIONS" \
+    FM_FAKE_HERDR_LOG="$FAKE_LOG" \
+    FM_FAKE_HERDR_REAL_SLEEP="$REAL_SLEEP" \
+    "$HELPER" "$@"
+}
+
 base_named_sessions() {
   printf '%s\n' '{"sessions":[
     {"name":"default","default":true,"running":false,"socket_path":"/tmp/default.sock","pid":null},
@@ -306,6 +323,21 @@ test_run_guards_and_parent_precheck() {
   local name="fm-lab-run-guards-$$" status=0
   reset_world "$(base_named_sessions)"
   run_helper arena provision "$name" || fail "run-guard fixture did not provision"
+
+  : > "$FAKE_LOG"
+  run_helper_from_task arena "$name" run "$name" workspace list >/dev/null \
+    || fail "task-runtime run with the verified task socket failed"
+  assert_grep "workspace list --session $name" "$FAKE_LOG" \
+    "task-runtime run did not reach the verified task target"
+  : > "$FAKE_LOG"
+  FM_FAKE_HERDR_RUNTIME_SOCKET=/tmp/foreign.sock \
+    run_helper_from_task arena "$name" run "$name" workspace list >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "task-runtime run with a foreign socket must refuse"
+  assert_no_grep 'workspace list ' "$FAKE_LOG" "foreign task socket reached the task command"
+  status=0
+  run_helper_from_task arena "$name" stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "task runtime must not authorize lifecycle commands"
+  assert_no_grep 'session stop ' "$FAKE_LOG" "task runtime reached a lifecycle stop"
 
   : > "$FAKE_LOG"
   run_helper arena run "$name" server stop >/dev/null 2>&1 || status=$?

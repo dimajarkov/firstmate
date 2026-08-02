@@ -294,7 +294,8 @@ Never use ambient `herdr server stop` for Firstmate verification.
 An environment-only session selection can silently reach a different running server, and the ambient stop command has no explicit target.
 
 `bin/fm-herdr-lab.sh` is the sole supported lifecycle helper for isolated verification.
-It requires the exact running parent fleet session in `FM_HERDR_LAB_PARENT_SESSION`, never infers a parent from the running-session inventory, and verifies a Herdr-managed caller's injected session and socket against that explicit parent.
+It requires the exact running parent fleet session in `FM_HERDR_LAB_PARENT_SESSION` and never infers a parent from the running-session inventory.
+Lifecycle commands verify a Herdr-managed caller's injected session and socket against that explicit parent, while `run` also accepts a task-lab caller only when its injected session and socket exactly match the verified task target.
 It provisions only non-default task names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
 The parent may safely be a genuine running `default` session or a running named session, including when other sessions are also running.
 Before task operations and immediately before every destructive call, the helper requires one exact running parent with the recorded canonical session object and one distinct non-default task target.

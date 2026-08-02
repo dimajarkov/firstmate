@@ -30,6 +30,9 @@ for tool in herdr jq pi python3; do
 done
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+export FM_HERDR_LAB_PARENT_SESSION
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 SESSION=$("$LAB_HELPER" name fm-afk-pi-return-e2e)
 TMP_ROOT=$(fm_test_tmproot fm-afk-pi-return-e2e)
 HOME_DIR="$TMP_ROOT/home"
