@@ -341,7 +341,7 @@ ok - real Herdr lab: concurrent primary/A/B spawns stay session-locked with zero
 ok - real Herdr lab: session lock contention from a secondmate home falls back flat with no journal
 ok - real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated
 ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority
-ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session tripwire intact
+ok - real Herdr lab validation completed on Herdr 0.7.4 with the protected-parent tripwire intact
 ```
 
 The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
@@ -360,7 +360,7 @@ ok - real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim 
 ok - real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent
 ok - real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift
 ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch
-ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact
+ok - real Herdr lab validation completed on Herdr 0.7.5 with the protected-parent tripwire intact
 ```
 
 The projection suite ran again on 2026-08-04 against Herdr 0.8.0 protocol 19 for the default-on flip, where an absent `config/herdr-presentation-spaces` enables the projection and the value `off` opts out; since 2026-08-05 an absent file enables the projection only at or above the 0.8.0 floor recorded under "Presentation version floor" below, and `on` is the explicit opt-in that survives the floor:
@@ -411,7 +411,7 @@ ok - fallback: a doomed pane holding a persistent child exhausts the proof and t
 ok - fallback on a defective release: a bounded wrong-focus window of 4 samples was fully restored to the anchor
 ok - version floor: herdr 0.7.5 protocol 17 remains conservatively below the floor with steal_live=1
 ok - version floor: an unconfigured home falls back flat on herdr 0.7.5 and the explicit opt-in still projects
-evidence: herdr=0.7.5 protocol=17 steal_live=1 floor_verdict=1 default-session-tripwire=armed
+evidence: herdr=0.7.5 protocol=17 steal_live=1 floor_verdict=1 protected-parent-tripwire=armed
 ```
 
 Observed output on Herdr 0.8.0:
@@ -490,7 +490,7 @@ Two real-hardware conditions were required for the pane-death path to engage and
 
 The rules match the v0.7.5 tag source (`close_selected_workspace` reassigns focus from the closing workspace's index; `handle_pane_died` only clamps the stale focused index), and the upstream default branch resolves both paths by workspace id (PR #1877, commit `165dca45`, for the explicit close; PR #1912, commit `a979916`, for pane death), so the plan degrades to a harmless reorder-then-remove once a release carries them.
 
-The full projection and restored-shell suites were re-run on 2026-07-28 on Herdr 0.7.5 with the updated close path; the presentation suite completed with `real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact`, and the restored-shell cleanup guarantee above was unchanged.
+The full projection and restored-shell suites were re-run on 2026-07-28 on Herdr 0.7.5 with the updated close path; the presentation suite completed with `real Herdr lab validation completed on Herdr 0.7.5 with the protected-parent tripwire intact`, and the restored-shell cleanup guarantee above was unchanged.
 
 The teardown-level record-retention gate was verified on 2026-07-28 with metadata fixtures and a live contending lock holder:
 
