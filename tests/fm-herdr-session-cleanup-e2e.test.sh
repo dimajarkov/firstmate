@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Real restored-shell E2E for home-local session-start Herdr projection cleanup.
 # Every CLI operation is routed through one guarded named non-default lab, and
-# lab teardown verifies that the default fleet session is byte-identical.
+# lab teardown verifies that the exact protected parent session is unchanged.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+export FM_HERDR_LAB_PARENT_SESSION
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -140,7 +143,7 @@ FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
 lab pane get "$(printf '%s' "$ANCHOR" | jq -r '.result.root_pane.pane_id')" >/dev/null \
   || fail 'anchor pane was touched by cleanup'
 STATUS=$(lab status --json) || fail 'could not read final named-lab version evidence'
-pass 'real named lab cleanup is idempotent and leaves the default fleet session to the teardown tripwire'
-printf 'evidence: herdr=%s protocol=%s default-session-tripwire=armed\n' \
+pass 'real named lab cleanup is idempotent and leaves the protected parent to the teardown tripwire'
+printf 'evidence: herdr=%s protocol=%s protected-parent-tripwire=armed\n' \
   "$(printf '%s' "$STATUS" | jq -r '.client.version')" \
   "$(printf '%s' "$STATUS" | jq -r '.server.protocol')"

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Provision and operate an isolated Herdr lab session without risking the live
-# default session.
+# Provision and operate an isolated Herdr lab session without risking its
+# verified parent fleet session.
 #
 # Usage:
 #   fm-herdr-lab.sh name <label>
-#   fm-herdr-lab.sh prepare <session>
-#   fm-herdr-lab.sh provision <session>
-#   fm-herdr-lab.sh run <session> <herdr arguments...>
-#   fm-herdr-lab.sh stop <session>
-#   fm-herdr-lab.sh teardown <session>
+#   FM_HERDR_LAB_PARENT_SESSION=<parent> fm-herdr-lab.sh prepare <session>
+#   FM_HERDR_LAB_PARENT_SESSION=<parent> fm-herdr-lab.sh provision <session>
+#   FM_HERDR_LAB_PARENT_SESSION=<parent> fm-herdr-lab.sh run <session> <herdr arguments...>
+#   FM_HERDR_LAB_PARENT_SESSION=<parent> fm-herdr-lab.sh stop <session>
+#   FM_HERDR_LAB_PARENT_SESSION=<parent> fm-herdr-lab.sh teardown <session>
 #
-# Session names must begin with "fm-lab-" and can never be "default".
+# Lifecycle commands require the exact running parent session through
+# FM_HERDR_LAB_PARENT_SESSION. The helper never infers it from the session
+# inventory. A Herdr-managed caller's injected session and socket must agree
+# with the supplied parent.
+# Session names must begin with "fm-lab-" and can never equal the parent.
 # The name command sanitizes the label, caps it at 16 characters, and appends
 # process/random suffixes to keep generated socket paths short.
 # Every Herdr call made here carries a trailing --session <session>.
@@ -19,10 +23,14 @@
 # operation.
 # Session stop is available only through guarded stop or teardown, and session
 # delete is available only through teardown.
-# Both paths perform a fresh refuse-default check immediately before each
-# destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Provision records the exact running parent-session object as a tripwire.
+# Prepare, provision, run, stop, and teardown refuse a missing, ambiguous,
+# changed, stopped, cross-runtime, or target-equal parent before proceeding.
+# Stop and teardown re-check both the protected parent and task target
+# immediately before every destructive call. Successful teardown requires the
+# parent snapshot to remain semantically identical, removes only the task lab,
+# and clears its tripwire.
+# End help.
 set -u
 
 fm_herdr_lab_error() {
@@ -40,12 +48,41 @@ fm_herdr_lab_validate_name() { # <session>
   return 1
 }
 
+fm_herdr_lab_validate_parent_name() { # <parent-session>
+  local parent=${1:-}
+  if [[ "$parent" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    return 0
+  fi
+  if [ -z "$parent" ]; then
+    fm_herdr_lab_error "FM_HERDR_LAB_PARENT_SESSION is required for every lifecycle command"
+  else
+    fm_herdr_lab_error "parent session must contain only letters, digits, underscores, or dashes: $parent"
+  fi
+  return 1
+}
+
+fm_herdr_lab_parent_name() {
+  local parent=${FM_HERDR_LAB_PARENT_SESSION:-}
+  fm_herdr_lab_validate_parent_name "$parent" || return 1
+  printf '%s\n' "$parent"
+}
+
+fm_herdr_lab_validate_pair() { # <parent-session> <lab-session>
+  local parent=$1 name=$2
+  fm_herdr_lab_validate_parent_name "$parent" || return 1
+  fm_herdr_lab_validate_name "$name" || return 1
+  [ "$parent" != "$name" ] || {
+    fm_herdr_lab_error "refusing to target protected parent session '$parent' as a task lab"
+    return 1
+  }
+}
+
 fm_herdr_lab_state_dir() {
   printf '%s' "${FM_HERDR_LAB_STATE_DIR:-${TMPDIR:-/tmp}/fm-herdr-lab-${UID}}"
 }
 
 fm_herdr_lab_tripwire_path() { # <session>
-  printf '%s/%s.fleet-state.json' "$(fm_herdr_lab_state_dir)" "$1"
+  printf '%s/%s.parent-state.json' "$(fm_herdr_lab_state_dir)" "$1"
 }
 
 fm_herdr_lab_raw() { # <session> <herdr arguments...>
@@ -54,70 +91,213 @@ fm_herdr_lab_raw() { # <session> <herdr arguments...>
   HERDR_SESSION="$name" herdr "$@" --session "$name"
 }
 
-fm_herdr_lab_session_list() { # <session>
+fm_herdr_lab_session_list() { # <selector-session>
   fm_herdr_lab_raw "$1" session list --json
 }
 
-fm_herdr_lab_fleet_state() { # <session>
-  local name=$1 sessions snapshot
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
-    fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
-    return 1
-  }
-  snapshot=$(printf '%s' "$sessions" | jq -c '
-    [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
-      then .[0] | {name, default, running, socket_path}
+fm_herdr_lab_parent_snapshot_from_inventory() { # <parent-session> <session-list-json>
+  local parent=$1 sessions=$2 snapshot
+  snapshot=$(printf '%s' "$sessions" | jq -cS --arg parent "$parent" '
+    [.sessions[]? | select(.name == $parent)]
+    | if (
+        length == 1
+        and (.[0].running == true)
+        and (((.[0].socket_path // "") | type) == "string")
+        and (((.[0].socket_path // "") | length) > 0)
+        and (if $parent == "default" then .[0].default == true else .[0].default == false end)
+      )
+      then .[0]
       else empty
       end
   ' 2>/dev/null)
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "protected parent '$parent' must resolve to exactly one running session with a verified socket and matching default identity"
     return 1
   }
   printf '%s\n' "$snapshot"
 }
 
-fm_herdr_lab_prepare() { # <session>
-  local name=$1 sessions state_dir tripwire
-  fm_herdr_lab_validate_name "$name" || return 1
-  command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
-  command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
+fm_herdr_lab_verify_runtime_parent() { # <parent-session> <parent-snapshot>
+  local parent=$1 snapshot=$2 runtime_claim=0 runtime_session runtime_socket snapshot_socket marker
+  for marker in HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH; do
+    [ -z "${!marker:-}" ] || runtime_claim=1
+  done
+  [ "$runtime_claim" -eq 1 ] || return 0
 
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
-    fm_herdr_lab_error "cannot list Herdr sessions before provisioning '$name'"
+  runtime_session=${HERDR_SESSION:-}
+  [ "$runtime_session" = "$parent" ] || {
+    fm_herdr_lab_error "protected parent '$parent' disagrees with the Herdr-managed caller session '${runtime_session:-<missing>}'"
     return 1
   }
-  if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
-    fm_herdr_lab_error "session '$name' already exists; refusing to adopt or overwrite it"
-    return 1
+  runtime_socket=${HERDR_SOCKET_PATH:-}
+  if [ -n "$runtime_socket" ]; then
+    snapshot_socket=$(printf '%s' "$snapshot" | jq -er '.socket_path' 2>/dev/null) || {
+      fm_herdr_lab_error "protected parent '$parent' has no verifiable socket identity"
+      return 1
+    }
+    [ "$runtime_socket" = "$snapshot_socket" ] || {
+      fm_herdr_lab_error "protected parent '$parent' socket disagrees with the Herdr-managed caller"
+      return 1
+    }
   fi
+}
 
-  state_dir=$(fm_herdr_lab_state_dir)
-  tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  mkdir -p "$state_dir" || return 1
-  [ ! -e "$tripwire" ] || {
-    fm_herdr_lab_error "tripwire already exists for '$name'; refusing ambiguous ownership"
+fm_herdr_lab_target_snapshot_from_inventory() { # <lab-session> <session-list-json>
+  local name=$1 sessions=$2 snapshot
+  snapshot=$(printf '%s' "$sessions" | jq -cS --arg name "$name" '
+    [.sessions[]? | select(.name == $name)]
+    | if (
+        length == 1
+        and .[0].default == false
+        and (((.[0].socket_path // "") | type) == "string")
+        and (((.[0].socket_path // "") | length) > 0)
+      )
+      then .[0]
+      else empty
+      end
+  ' 2>/dev/null)
+  [ -n "$snapshot" ] || {
+    fm_herdr_lab_error "task lab '$name' is missing, ambiguous, default, or lacks a verified socket"
     return 1
   }
-  fm_herdr_lab_fleet_state "$name" > "$tripwire" || {
-    rm -f "$tripwire"
+  printf '%s\n' "$snapshot"
+}
+
+fm_herdr_lab_distinct_target_snapshot() { # <parent-session> <lab-session> <session-list-json>
+  local parent=$1 name=$2 sessions=$3 parent_snapshot target_snapshot parent_socket target_socket
+  parent_snapshot=$(fm_herdr_lab_parent_snapshot_from_inventory "$parent" "$sessions") || return 1
+  target_snapshot=$(fm_herdr_lab_target_snapshot_from_inventory "$name" "$sessions") || return 1
+  parent_socket=$(printf '%s' "$parent_snapshot" | jq -er '.socket_path' 2>/dev/null) || return 1
+  target_socket=$(printf '%s' "$target_snapshot" | jq -er '.socket_path' 2>/dev/null) || return 1
+  [ "$parent_socket" != "$target_socket" ] || {
+    fm_herdr_lab_error "refusing task lab '$name': it resolves to the protected parent '$parent' socket"
+    return 1
+  }
+  printf '%s\n' "$target_snapshot"
+}
+
+fm_herdr_lab_tripwire_record() { # <session>
+  local name=$1 tripwire record
+  tripwire=$(fm_herdr_lab_tripwire_path "$name")
+  [ -f "$tripwire" ] && [ ! -L "$tripwire" ] || {
+    fm_herdr_lab_error "protected-parent tripwire for '$name' is missing or not a regular non-symlink file; refusing unverified operation"
+    return 1
+  }
+  record=$(jq -cS -e '
+    select(
+      .version == 1
+      and (.lab_session | type == "string")
+      and (.parent_session | type == "string")
+      and (.parent_state | type == "object")
+    )
+  ' "$tripwire" 2>/dev/null) || {
+    fm_herdr_lab_error "protected-parent tripwire for '$name' is malformed"
+    return 1
+  }
+  printf '%s\n' "$record"
+}
+
+fm_herdr_lab_tripwire_binding() { # <parent-session> <lab-session>
+  local parent=$1 name=$2 record record_parent record_lab
+  record=$(fm_herdr_lab_tripwire_record "$name") || return 1
+  record_parent=$(printf '%s' "$record" | jq -r '.parent_session')
+  record_lab=$(printf '%s' "$record" | jq -r '.lab_session')
+  [ "$record_parent" = "$parent" ] || {
+    fm_herdr_lab_error "protected parent changed from '$record_parent' to '$parent'; refusing to guess"
+    return 1
+  }
+  [ "$record_lab" = "$name" ] || {
+    fm_herdr_lab_error "tripwire lab identity '$record_lab' does not match requested task lab '$name'"
+    return 1
+  }
+  printf '%s\n' "$record"
+}
+
+fm_herdr_lab_verify_inventory_binding() { # <parent-session> <lab-session> <session-list-json>
+  local parent=$1 name=$2 sessions=$3 record before after
+  record=$(fm_herdr_lab_tripwire_binding "$parent" "$name") || return 1
+  before=$(printf '%s' "$record" | jq -cS '.parent_state')
+  after=$(fm_herdr_lab_parent_snapshot_from_inventory "$parent" "$sessions") || return 1
+  fm_herdr_lab_verify_runtime_parent "$parent" "$after" || return 1
+  [ "$before" = "$after" ] || {
+    fm_herdr_lab_error "PROTECTED-PARENT TRIPWIRE FAILED: session '$parent' changed during lab work"
+    fm_herdr_lab_error "before: $before"
+    fm_herdr_lab_error "after:  $after"
     return 1
   }
 }
 
-fm_herdr_lab_refuse_if_default() { # <session>
-  local name=$1 info flag
-  fm_herdr_lab_validate_name "$name" || return 1
-  info=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
-    fm_herdr_lab_error "refusing destructive call because session list failed"
+fm_herdr_lab_check_tripwire() { # <session>
+  local name=$1 parent sessions
+  parent=$(fm_herdr_lab_parent_name) || return 1
+  fm_herdr_lab_validate_pair "$parent" "$name" || return 1
+  fm_herdr_lab_tripwire_binding "$parent" "$name" >/dev/null || return 1
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
+    fm_herdr_lab_error "cannot read Herdr sessions while checking protected parent '$parent'"
     return 1
   }
-  flag=$(printf '%s' "$info" | jq -r --arg name "$name" \
-    '.sessions[]? | select(.name == $name) | .default' 2>/dev/null)
-  [ "$flag" = false ] && return 0
-  fm_herdr_lab_error "refusing destructive call for '$name': session is absent or default (default=${flag:-<not found>})"
-  return 1
+  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions"
+}
+
+fm_herdr_lab_guard_target() { # <session>
+  local name=$1 parent sessions
+  parent=$(fm_herdr_lab_parent_name) || return 1
+  fm_herdr_lab_validate_pair "$parent" "$name" || return 1
+  fm_herdr_lab_tripwire_binding "$parent" "$name" >/dev/null || return 1
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
+    fm_herdr_lab_error "refusing task-lab operation because session inventory failed"
+    return 1
+  }
+  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" || return 1
+  fm_herdr_lab_distinct_target_snapshot "$parent" "$name" "$sessions" >/dev/null
+}
+
+fm_herdr_lab_write_tripwire() { # <parent-session> <lab-session> <parent-snapshot>
+  local parent=$1 name=$2 snapshot=$3 state_dir tripwire temporary record
+  state_dir=$(fm_herdr_lab_state_dir)
+  tripwire=$(fm_herdr_lab_tripwire_path "$name")
+  mkdir -p "$state_dir" || return 1
+  chmod 700 "$state_dir" 2>/dev/null || true
+  [ ! -e "$tripwire" ] || {
+    fm_herdr_lab_error "tripwire already exists for '$name'; refusing ambiguous ownership"
+    return 1
+  }
+  record=$(jq -cnS --arg parent "$parent" --arg lab "$name" --argjson state "$snapshot" \
+    '{version:1,lab_session:$lab,parent_session:$parent,parent_state:$state}') || return 1
+  temporary="$tripwire.tmp.$$.$RANDOM"
+  (umask 077; printf '%s\n' "$record" > "$temporary") || {
+    rm -f "$temporary"
+    return 1
+  }
+  if ! mv "$temporary" "$tripwire"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
+fm_herdr_lab_prepare() { # <session>
+  local name=$1 parent sessions parent_snapshot target_count
+  fm_herdr_lab_validate_name "$name" || return 1
+  command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
+  command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
+  parent=$(fm_herdr_lab_parent_name) || return 1
+  fm_herdr_lab_validate_pair "$parent" "$name" || return 1
+
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
+    fm_herdr_lab_error "cannot list Herdr sessions before preparing '$name'"
+    return 1
+  }
+  parent_snapshot=$(fm_herdr_lab_parent_snapshot_from_inventory "$parent" "$sessions") || return 1
+  fm_herdr_lab_verify_runtime_parent "$parent" "$parent_snapshot" || return 1
+  target_count=$(printf '%s' "$sessions" | jq -r --arg name "$name" '[.sessions[]? | select(.name == $name)] | length' 2>/dev/null) || {
+    fm_herdr_lab_error "cannot verify task-lab absence before preparing '$name'"
+    return 1
+  }
+  [ "$target_count" = 0 ] || {
+    fm_herdr_lab_error "session '$name' already exists; refusing to adopt or overwrite it"
+    return 1
+  }
+  fm_herdr_lab_write_tripwire "$parent" "$name" "$parent_snapshot"
 }
 
 fm_herdr_lab_cli() { # <session> <herdr arguments...>
@@ -150,6 +330,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
+  fm_herdr_lab_guard_target "$name" || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 
@@ -169,41 +350,48 @@ fm_herdr_lab_cancel_provision() { # <pid>
 }
 
 fm_herdr_lab_provision() { # <session>
-  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  local name=$1 parent sessions tripwire running attempt server_pid max_attempts timeout_seconds target target_running
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
+  parent=$(fm_herdr_lab_parent_name) || return 1
+  fm_herdr_lab_validate_pair "$parent" "$name" || return 1
 
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
     fm_herdr_lab_error "cannot list Herdr sessions before provisioning '$name'"
     return 1
   }
   if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
     tripwire=$(fm_herdr_lab_tripwire_path "$name")
     [ -f "$tripwire" ] || {
-      fm_herdr_lab_error "missing fleet-state tripwire for existing session '$name'; refusing to adopt it"
+      fm_herdr_lab_error "missing protected-parent tripwire for existing session '$name'; refusing to adopt it"
       return 1
     }
-    fm_herdr_lab_refuse_if_default "$name" || return 1
-    running=$(printf '%s' "$sessions" | jq -r --arg name "$name" \
-      '.sessions[]? | select(.name == $name) | .running' 2>/dev/null)
-    [ "$running" = false ] || {
+    fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" || return 1
+    target=$(fm_herdr_lab_distinct_target_snapshot "$parent" "$name" "$sessions") || return 1
+    target_running=$(printf '%s' "$target" | jq -r '.running')
+    [ "$target_running" = false ] || {
       fm_herdr_lab_error "session '$name' is not stopped; refusing to re-provision it"
       return 1
     }
-    fm_herdr_lab_check_tripwire "$name" || return 1
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
+
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
   server_pid=$!
   attempt=0
   max_attempts=300
   timeout_seconds=60
   while [ "$attempt" -lt "$max_attempts" ]; do
-    running=$(fm_herdr_lab_cli "$name" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null) || running=false
+    fm_herdr_lab_check_tripwire "$name" || {
+      fm_herdr_lab_cancel_provision "$server_pid"
+      return 1
+    }
+    running=$(fm_herdr_lab_raw "$name" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null) || running=false
     if [ "$running" = true ]; then
-      fm_herdr_lab_refuse_if_default "$name" || {
+      fm_herdr_lab_guard_target "$name" || {
         fm_herdr_lab_cancel_provision "$server_pid"
         return 1
       }
@@ -217,66 +405,54 @@ fm_herdr_lab_provision() { # <session>
   return 1
 }
 
-fm_herdr_lab_check_tripwire() { # <session>
-  local name=$1 tripwire before after
-  tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  [ -f "$tripwire" ] || {
-    fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing unverified teardown"
-    return 1
-  }
-  before=$(cat "$tripwire")
-  after=$(fm_herdr_lab_fleet_state "$name") || return 1
-  [ "$before" = "$after" ] || {
-    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: default session changed during lab work"
-    fm_herdr_lab_error "before: $before"
-    fm_herdr_lab_error "after:  $after"
-    return 1
-  }
-}
-
 fm_herdr_lab_verify_tripwire() { # <session>
-  local name=$1 tripwire
+  local name=$1 tripwire state_dir
   fm_herdr_lab_check_tripwire "$name" || return 1
   tripwire=$(fm_herdr_lab_tripwire_path "$name")
+  state_dir=$(fm_herdr_lab_state_dir)
   rm -f "$tripwire"
+  rmdir "$state_dir" 2>/dev/null || true
 }
 
 fm_herdr_lab_stop() { # <session>
-  local name=$1 tripwire
+  local name=$1 status=0
   fm_herdr_lab_validate_name "$name" || return 1
-  tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  [ -f "$tripwire" ] || {
-    fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing stop"
-    return 1
-  }
-  fm_herdr_lab_refuse_if_default "$name" || return 1
-  fm_herdr_lab_raw "$name" session stop "$name" --json
+  fm_herdr_lab_guard_target "$name" || return 1
+  fm_herdr_lab_raw "$name" session stop "$name" --json || status=$?
+  fm_herdr_lab_check_tripwire "$name" || return 1
+  return "$status"
 }
 
 fm_herdr_lab_teardown() { # <session>
-  local name=$1 tripwire sessions delete_status=0
+  local name=$1 parent sessions delete_status=0
   fm_herdr_lab_validate_name "$name" || return 1
-  tripwire=$(fm_herdr_lab_tripwire_path "$name")
-  [ -f "$tripwire" ] || {
-    fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing destructive calls"
-    return 1
-  }
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
+  parent=$(fm_herdr_lab_parent_name) || return 1
+  fm_herdr_lab_validate_pair "$parent" "$name" || return 1
+  fm_herdr_lab_tripwire_binding "$parent" "$name" >/dev/null || return 1
+
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
     fm_herdr_lab_error "cannot list Herdr sessions before teardown"
     return 1
   }
+  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" || return 1
   if ! printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
     fm_herdr_lab_verify_tripwire "$name"
     return
   fi
-  fm_herdr_lab_stop "$name" >/dev/null 2>&1 || true
+  fm_herdr_lab_guard_target "$name" || return 1
+  fm_herdr_lab_raw "$name" session stop "$name" --json >/dev/null 2>&1 || true
+  fm_herdr_lab_check_tripwire "$name" || return 1
   sleep 0.5
-  fm_herdr_lab_refuse_if_default "$name" || return 1
+
+  fm_herdr_lab_guard_target "$name" || return 1
   fm_herdr_lab_raw "$name" session delete "$name" --json >/dev/null 2>&1 || delete_status=$?
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
+  fm_herdr_lab_check_tripwire "$name" || return 1
+
+  sessions=$(fm_herdr_lab_session_list "$parent" 2>/dev/null) || {
     fm_herdr_lab_error "cannot confirm removal of lab session '$name' after teardown"
     return 1
   }
+  fm_herdr_lab_verify_inventory_binding "$parent" "$name" "$sessions" || return 1
   if printf '%s' "$sessions" | jq -e --arg name "$name" '.sessions[]? | select(.name == $name)' >/dev/null 2>&1; then
     if [ "$delete_status" -ne 0 ]; then
       fm_herdr_lab_error "session delete failed for '$name' and the lab session remains"
@@ -299,7 +475,14 @@ fm_herdr_lab_name() { # <label>
 }
 
 fm_herdr_lab_usage() {
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk '
+    /^# Usage:/ { emit = 1 }
+    /^# End help\./ { exit }
+    emit {
+      sub(/^# ?/, "")
+      print
+    }
+  ' "${BASH_SOURCE[0]}"
 }
 
 fm_herdr_lab_main() {

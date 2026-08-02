@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compatibility source for real-Herdr tests.
-# The production owner of the isolation, refuse-default, teardown, and
-# fleet-state tripwire contract is bin/fm-herdr-lab.sh.
+# The production owner of task-session isolation, protected-parent binding,
+# teardown, and tripwire verification is bin/fm-herdr-lab.sh.
 set -u
 
 # Herdr backend tests drive the real fm-spawn/fm-teardown but do not source
@@ -13,6 +13,12 @@ export FM_GATE_REFUSE_BYPASS=1
 HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"
+
+# Capture the exact protected parent before a real-Herdr test deliberately
+# drops its inherited pane identity and points HERDR_SESSION at the task lab.
+# A non-Herdr caller must supply FM_HERDR_LAB_PARENT_SESSION explicitly.
+FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+export FM_HERDR_LAB_PARENT_SESSION
 
 # herdr_forget_inherited_pane: drop the Herdr PANE identity this test process
 # inherited from whatever terminal it was started in.
@@ -34,7 +40,7 @@ herdr_forget_inherited_pane() {
 }
 
 herdr_refuse_if_default() { # <session>
-  fm_herdr_lab_refuse_if_default "$1"
+  fm_herdr_lab_guard_target "$1"
 }
 
 herdr_safe_stop_and_delete() { # <session>

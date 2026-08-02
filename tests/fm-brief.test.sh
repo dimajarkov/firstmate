@@ -383,6 +383,9 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing its hard safety contract"
   assert_grep "HERDR_LAB_HELPER='$ROOT/bin/fm-herdr-lab.sh'" "$brief" \
     "Herdr lab brief must bind the absolute Firstmate helper path"
+  # shellcheck disable=SC2016 # The generated brief must retain this literal expansion.
+  assert_grep 'FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}' "$brief" \
+    "Herdr lab brief missing exact parent-session capture"
   assert_grep "HERDR_LAB_SESSION=\$(\"\$HERDR_LAB_HELPER\" name $id)" "$brief" \
     "Herdr lab brief missing helper-owned session naming"
   assert_grep "\"\$HERDR_LAB_HELPER\" provision \"\$HERDR_LAB_SESSION\"" "$brief" \
@@ -393,9 +396,9 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing the per-call trailing session contract"
   assert_grep "direct \`herdr server stop\`" "$brief" \
     "Herdr lab brief missing the forbidden server-global command list"
-  assert_grep "records the live default session before provisioning" "$brief" \
+  assert_grep "records the exact verified parent session before provisioning" "$brief" \
     "Herdr lab brief missing the before tripwire"
-  assert_grep "verifies the identical fleet state after teardown" "$brief" \
+  assert_grep "re-checks it before every task call, and verifies the semantically identical parent state after teardown" "$brief" \
     "Herdr lab brief missing the after tripwire"
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"

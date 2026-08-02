@@ -8,6 +8,9 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+export FM_HERDR_LAB_PARENT_SESSION
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -1372,9 +1375,9 @@ STATUS_JSON=$(lab status --json)
 HERDR_VERSION=$(printf '%s' "$STATUS_JSON" | jq -r '.client.version // "unknown"')
 PATH="$HERDR_ORIGINAL_PATH" \
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" \
-  || fail "guarded Herdr lab teardown or default-session tripwire verification failed"
+  || fail "guarded Herdr lab teardown or protected-parent tripwire verification failed"
 LAB_READY=0
-pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the default-session tripwire intact"
+pass "real Herdr lab validation completed on Herdr $HERDR_VERSION with the protected-parent tripwire intact"
 
 cleanup_all
 trap - EXIT

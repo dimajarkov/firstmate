@@ -272,21 +272,23 @@ HERDR_SECTION=$(printf '%s\n' \
 '# Herdr isolation - HARD SAFETY CONTRACT' \
 'This brief was explicitly scaffolded with `--herdr-lab` because the task will drive Herdr lifecycle behavior.' \
 'On Herdr 0.7.3 the API socket is not relocatable by `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, or `HOME`.' \
-'A named non-`default` session plus a trailing `--session <name>` on every call is the only viable local isolation.' \
+'A named task session plus a trailing `--session <name>` on every task call is the only viable local isolation.' \
 '' \
-'1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and generate the session name with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
+'1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and preserve the exact parent fleet session with `FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}`.' \
+'   A missing parent identity is a hard refusal; never choose a parent merely because it is the only running session.' \
+'2. Export `FM_HERDR_LAB_PARENT_SESSION`, then generate the task session only with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install `trap '\''"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"'\'' EXIT` before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \
-'2. Run every task-specific non-lifecycle Herdr command through `"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" <arguments...>`.' \
-'   The helper appends the required trailing `--session "$HERDR_LAB_SESSION"`; `HERDR_SESSION` alone is never accepted as isolation.' \
-'3. Teardown only through `"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"`.' \
-'   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
-'4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
-'5. Forbidden commands: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
-'6. The helper records the live default session before provisioning and verifies the identical fleet state after teardown.' \
-'   A missing, stopped, or changed default session is a hard tripwire failure, never a cleanup warning to ignore.' \
+'3. Run every task-specific non-lifecycle Herdr command through `"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" <arguments...>`.' \
+'   The helper appends the required trailing `--session "$HERDR_LAB_SESSION"`; ambient session state alone is never accepted as isolation.' \
+'4. Teardown only through `"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"`.' \
+'   It re-checks the exact protected parent and task target immediately before stop and again immediately before delete.' \
+'5. If an experiment requires a deliberate mid-run task-session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`.' \
+'   The helper performs the same immediate protected-parent and target check.' \
+'6. Forbidden commands remain: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
+'7. The helper records the exact verified parent session before provisioning, re-checks it before every task call, and verifies the semantically identical parent state after teardown.' \
+'   A missing, ambiguous, stopped, changed, or cross-runtime parent is a hard tripwire failure, never a cleanup warning to ignore.' \
 '' \
-'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.' \
-'The captain fleet uses the running `default` session.')
+'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.')
 else
 IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
 # Herdr lifecycle declaration - NOT ENABLED

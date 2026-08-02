@@ -15,11 +15,14 @@
 # On a future release whose explicit close preserves focus, Part A records
 # that and Parts B and C keep outcome-only assertions, so no version is guessed.
 # Every CLI operation is routed through one guarded named non-default lab, and
-# lab teardown verifies that the default fleet session is byte-identical.
+# lab teardown verifies that the exact protected parent session is unchanged.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+export FM_HERDR_LAB_PARENT_SESSION
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
@@ -343,7 +346,7 @@ fi
 # below-floor release may conservatively include the known post-fix protocol-18
 # preview without weakening the stated 0.8.0 policy floor.
 STATUS=$(lab status --json) || fail 'could not read final named-lab version evidence'
-LIVE_VERSION=$(printf '%s' "$STATUS" | jq -r '.client.version')
+ LIVE_VERSION=$(printf '%s' "$STATUS" | jq -r '.client.version')
 LIVE_PROTOCOL=$(printf '%s' "$STATUS" | jq -r '.client.protocol')
 FLOOR_VERDICT=$(bash -c '
   . "$0/bin/backends/herdr.sh"
@@ -394,5 +397,5 @@ else
   pass "version floor: an unconfigured home stays projected on herdr $LIVE_VERSION and the explicit opt-in agrees"
 fi
 
-printf 'evidence: herdr=%s protocol=%s steal_live=%s floor_verdict=%s default-session-tripwire=armed\n' \
+printf 'evidence: herdr=%s protocol=%s steal_live=%s floor_verdict=%s protected-parent-tripwire=armed\n' \
   "$LIVE_VERSION" "$LIVE_PROTOCOL" "$STEAL_LIVE" "$FLOOR_VERDICT"

@@ -294,12 +294,14 @@ Never use ambient `herdr server stop` for Firstmate verification.
 An environment-only session selection can silently reach a different running server, and the ambient stop command has no explicit target.
 
 `bin/fm-herdr-lab.sh` is the sole supported lifecycle helper for isolated verification.
-It provisions only non-default names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
-Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
-Its before/after tripwire requires the live default-session snapshot to remain byte-identical.
+It requires the exact running parent fleet session in `FM_HERDR_LAB_PARENT_SESSION`, never infers a parent from the running-session inventory, and verifies a Herdr-managed caller's injected session and socket against that explicit parent.
+It provisions only non-default task names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
+The parent may safely be a genuine running `default` session or a running named session, including when other sessions are also running.
+Before task operations and immediately before every destructive call, the helper requires one exact running parent with the recorded canonical session object and one distinct non-default task target.
+The protected-parent tripwire must remain semantically identical across prepare, provision, run, stop, and teardown; missing, ambiguous, stopped, changed, cross-runtime, or target-equal identity refuses rather than guessing.
 
 The helper's header and `--help` own exact commands.
-Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.
+`tests/fm-herdr-lab.test.sh` covers the public executable interface, while real-Herdr tests use thin compatibility setup in `tests/herdr-test-safety.sh` without duplicating the lifecycle policy.
 
 ## Active limits
 
@@ -317,6 +319,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 
 ```sh
 tests/fm-backend-herdr.test.sh
+tests/fm-herdr-lab.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
@@ -330,5 +333,5 @@ tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Real Herdr tests use the named lab helper and default-session tripwire.
+Real Herdr tests use the named lab helper and exact protected-parent tripwire.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) records the active version, CLI, projection, event, and lifecycle evidence without task-specific chronology.

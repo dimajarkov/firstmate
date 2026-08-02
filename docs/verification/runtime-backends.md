@@ -215,8 +215,28 @@ The CLI matrix was checked directly:
 | Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
 | Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
 
-All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
+All destructive verification uses `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and an exact protected-parent tripwire.
 No ambient `herdr server stop` command is a supported test operation.
+
+### Protected parent lab binding
+
+The named-parent correction was verified on 2026-08-03 against Herdr 0.7.5 protocol 17 from the running `arena` fleet session while `default` remained stopped.
+The deterministic public-interface suite covered a running named parent with stopped default, genuine running-default compatibility, multiple running sessions, missing and ambiguous parents, parent changes, runtime-identity disagreement, protected-parent targeting, guarded stop and delete, and complete task-lab cleanup without unrelated-session changes:
+
+```sh
+tests/fm-herdr-lab.test.sh
+```
+
+The real lifecycle used only the patched local helper, exported `FM_HERDR_LAB_PARENT_SESSION=arena`, installed the helper teardown trap before provision, and routed status plus session inventory through `run`.
+After successful teardown, `prepare` on the same task name proved that the lab was absent while recording a second canonical parent snapshot; `cmp` proved the before and after parent objects were byte-identical, and helper teardown removed that absence-proof tripwire.
+
+```text
+live_parent=arena herdr=0.7.5 protocol=17 default_running=false
+original_lab_absent_after_teardown=yes
+parent_snapshot_identical_after_absence_proof=yes
+before={"default":false,"name":"arena","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/arena","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/arena/herdr.sock"}
+after={"default":false,"name":"arena","running":true,"session_dir":"/Users/dmitrijarkov/.config/herdr/sessions/arena","socket_path":"/Users/dmitrijarkov/.config/herdr/sessions/arena/herdr.sock"}
+```
 
 ### Prune and respawn
 
