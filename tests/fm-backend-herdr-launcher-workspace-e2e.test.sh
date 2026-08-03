@@ -44,6 +44,7 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # Every spawn below states its own launcher identity, so a pane inherited from
 # the terminal this suite was started in must not leak into any of them.
+herdr_capture_parent_session
 herdr_forget_inherited_pane
 
 TMP_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-launcher-e2e.XXXXXX")

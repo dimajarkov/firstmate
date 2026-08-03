@@ -49,6 +49,7 @@ export FM_GATE_REFUSE_BYPASS=1
 # against its own isolated lab session. A Herdr pane inherited from the terminal
 # it was launched in must not follow spawn into that session as a cross-session
 # parent identity; the spawn below sets HERDR_ENV explicitly.
+herdr_capture_parent_session
 herdr_forget_inherited_pane
 
 # TMP_ROOT is physically resolved (mktemp -d "$(pwd -P)"-relative) to keep this

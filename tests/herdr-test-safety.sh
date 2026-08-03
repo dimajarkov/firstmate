@@ -14,11 +14,13 @@ HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"
 
-# Capture the exact protected parent before a real-Herdr test deliberately
-# drops its inherited pane identity and points HERDR_SESSION at the task lab.
+# herdr_capture_parent_session: preserve the exact inherited parent session
+# before this suite drops the task-runtime identity for an isolated lab.
 # A non-Herdr caller must supply FM_HERDR_LAB_PARENT_SESSION explicitly.
-FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
-export FM_HERDR_LAB_PARENT_SESSION
+herdr_capture_parent_session() {
+  FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+  export FM_HERDR_LAB_PARENT_SESSION
+}
 
 # herdr_forget_inherited_pane: drop the Herdr PANE identity this test process
 # inherited from whatever terminal it was started in.

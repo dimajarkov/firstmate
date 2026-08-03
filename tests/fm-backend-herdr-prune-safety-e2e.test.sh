@@ -36,6 +36,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 # This suite runs against its own isolated lab session, so a Herdr pane
 # inherited from the terminal it was launched in must not follow spawn into it
 # as a cross-session parent identity (tests/herdr-test-safety.sh).
+herdr_capture_parent_session
 herdr_forget_inherited_pane
 
 SESSION="fm-lab-prune-safety-e2e-$$"
