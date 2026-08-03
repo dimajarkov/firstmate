@@ -15,10 +15,13 @@ HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"
 
 # herdr_capture_parent_session: preserve the exact inherited parent session
-# before this suite drops the task-runtime identity for an isolated lab.
-# A non-Herdr caller must supply FM_HERDR_LAB_PARENT_SESSION explicitly.
+# before this suite drops the task-runtime identity for an isolated lab. A
+# real-Herdr test runner that is not itself Herdr-managed explicitly selects
+# its known compatibility parent, `default`; this is test setup, never an
+# inventory-derived parent guess. Production callers must still supply an
+# injected or explicit parent identity.
 herdr_capture_parent_session() {
-  FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}
+  FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-default}}
   export FM_HERDR_LAB_PARENT_SESSION
 }
 
