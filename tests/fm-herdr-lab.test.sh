@@ -304,6 +304,22 @@ test_runtime_identity_must_match_explicit_parent() {
   local name="fm-lab-runtime-parent-$$" status=0
   reset_world "$(base_named_sessions)"
   env \
+    -u HERDR_SOCKET_PATH \
+    HERDR_ENV=1 \
+    HERDR_SESSION=arena \
+    PATH="$FAKEBIN:$PATH" \
+    FM_HERDR_LAB_PARENT_SESSION=arena \
+    FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
+    FM_FAKE_HERDR_SESSIONS="$FAKE_SESSIONS" \
+    FM_FAKE_HERDR_LOG="$FAKE_LOG" \
+    "$HELPER" provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "Herdr-managed parent without an injected socket must refuse provision"
+  assert_no_grep '^server ' "$FAKE_LOG" "managed parent without a socket started a lab server"
+  assert_absent "$(tripwire_for "$name")" "managed parent without a socket created a tripwire"
+
+  : > "$FAKE_LOG"
+  status=0
+  env \
     HERDR_ENV=1 \
     HERDR_SESSION=sibling \
     HERDR_SOCKET_PATH=/tmp/sibling.sock \

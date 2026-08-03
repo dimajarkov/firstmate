@@ -129,9 +129,10 @@ fm_herdr_lab_verify_runtime_parent() { # <parent-session> <parent-snapshot> [<la
   runtime_session=${HERDR_SESSION:-}
   runtime_socket=${HERDR_SOCKET_PATH:-}
   if [ "$runtime_session" = "$parent" ]; then
-    if [ -z "$runtime_socket" ]; then
-      return 0
-    fi
+    [ -n "$runtime_socket" ] || {
+      fm_herdr_lab_error "protected parent '$parent' must provide its injected Herdr socket identity"
+      return 1
+    }
     snapshot_socket=$(printf '%s' "$snapshot" | jq -er '.socket_path' 2>/dev/null) || {
       fm_herdr_lab_error "protected parent '$parent' has no verifiable socket identity"
       return 1
