@@ -274,7 +274,7 @@ HERDR_SECTION=$(printf '%s\n' \
 'On Herdr 0.7.3 the API socket is not relocatable by `HERDR_CONFIG_PATH`, `XDG_CONFIG_HOME`, or `HOME`.' \
 'A named task session plus a trailing `--session <name>` on every task call is the only viable local isolation.' \
 '' \
-'1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and preserve the exact parent fleet session with `FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-}}`.' \
+'1. Set `HERDR_LAB_HELPER='"$HERDR_LAB_HELPER"'` and preserve the exact parent fleet session with `FM_HERDR_LAB_PARENT_SESSION=${HERDR_SESSION:-${FM_HERDR_LAB_PARENT_SESSION:-}}`.' \
 '   A missing parent identity is a hard refusal; never choose a parent merely because it is the only running session.' \
 '2. Export `FM_HERDR_LAB_PARENT_SESSION`, then generate the task session only with `HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name '"$ID"')`.' \
 '   Install `trap '\''"$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"'\'' EXIT` before provisioning, then provision only with `"$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"`.' \

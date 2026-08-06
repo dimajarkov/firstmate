@@ -32,7 +32,7 @@ done
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 # A non-Herdr-managed CI runner explicitly selects the compatibility parent;
 # this is not a session-inventory inference.
-FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-default}}
+FM_HERDR_LAB_PARENT_SESSION=${HERDR_SESSION:-${FM_HERDR_LAB_PARENT_SESSION:-default}}
 export FM_HERDR_LAB_PARENT_SESSION
 unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 SESSION=$("$LAB_HELPER" name fm-afk-pi-return-e2e)

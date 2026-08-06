@@ -21,7 +21,7 @@ HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # inventory-derived parent guess. Production callers must still supply an
 # injected or explicit parent identity.
 herdr_capture_parent_session() {
-  FM_HERDR_LAB_PARENT_SESSION=${FM_HERDR_LAB_PARENT_SESSION:-${HERDR_SESSION:-default}}
+  FM_HERDR_LAB_PARENT_SESSION=${HERDR_SESSION:-${FM_HERDR_LAB_PARENT_SESSION:-default}}
   export FM_HERDR_LAB_PARENT_SESSION
 }
 
