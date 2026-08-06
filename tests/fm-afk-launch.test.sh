@@ -12,8 +12,8 @@
 #   the captain's active tab topology UNCHANGED, because the daemon lands in a
 #   NON-VISIBLE separate terminal (a herdr dedicated workspace, a detached tmux
 #   session), never a split of the captain's pane. The herdr path runs on a
-#   throwaway, NEVER-default HERDR_SESSION and asserts the default session is
-#   byte-identical via the fm-herdr-lab.sh fleet-state tripwire; the tmux path
+#   throwaway, NEVER-default HERDR_SESSION and asserts the exact protected
+#   parent is byte-identical via the fm-herdr-lab.sh tripwire; the tmux path
 #   uses uniquely-named throwaway sessions killed by exact name. A harmless
 #   sleeper replaces the real daemon (FM_AFK_LAUNCH_ENTRY) so the test observes
 #   only the terminal lifecycle.

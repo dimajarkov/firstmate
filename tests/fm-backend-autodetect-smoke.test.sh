@@ -10,7 +10,8 @@
 # adapter primitive - it has to be proven where fm_backend_name is actually
 # called. The real spawn runs in a helper-provisioned, per-run named Herdr lab
 # session, with a scratch FM_HOME and scratch local-only project. Concurrent
-# copies therefore never share the default session or a workspace namespace.
+# copies therefore never share a task-lab session or a workspace namespace;
+# they may bind the known compatibility parent without mutating it.
 #
 # The complementary "tmux nested inside herdr resolves to tmux, silently" case
 # is covered as a fast, deterministic fake-tmux fm-spawn.sh test in
@@ -22,7 +23,7 @@
 #
 # Safety (2026-07-02 incident): every test-owned Herdr operation goes through
 # bin/fm-herdr-lab.sh, which appends the named session flag and verifies the
-# default fleet session is unchanged after teardown. Never replace the helper
+# exact protected parent is unchanged after teardown. Never replace the helper
 # with an ambient HERDR_SESSION-only command.
 set -u
 

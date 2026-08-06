@@ -59,8 +59,8 @@ export HERDR_SESSION="$HERDR_LAB_SESSION"
 WORKTREES=()
 CLEANED=0
 # Idempotent: fail() cleans up before exiting and the EXIT trap fires after it,
-# so a second teardown would otherwise report the already-consumed fleet-state
-# tripwire as if the lab had gone wrong.
+# so a second teardown would otherwise report the already-consumed protected-
+# parent tripwire as if the lab had gone wrong.
 cleanup_all() {
   local wt status=0
   [ "$CLEANED" = 0 ] || return 0
